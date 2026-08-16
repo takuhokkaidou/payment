@@ -22,23 +22,19 @@
     .flex-inputs { display: flex; gap: 8px; }
     .flex-inputs > div { flex: 1; }
     
-    /* よく使うメモボタン */
     .quick-notes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .note-btn { width: auto; padding: 6px 12px; font-size: 0.85em; background: #e9ecef; color: #495057; border: 1px solid #ced4da; margin-top: 0; border-radius: 16px; }
     
-    /* タブUIのスタイル */
     .tab-menu { display: flex; border-bottom: 2px solid #ccc; margin-bottom: 16px; background: #fff; border-radius: 8px 8px 0 0; overflow: hidden; }
     .tab-btn { flex: 1; padding: 12px; border: none; background: #f1f3f5; color: #495057; font-weight: bold; cursor: pointer; border-radius: 0; margin-top: 0; }
     .tab-btn.active { background: #007bff; color: white; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
-    /* 履歴フィルター合計スタイル */
     .filter-summary { background: #e7f5ff; border: 1px solid #a5d8ff; padding: 12px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9em; }
     .filter-summary div { display: flex; justify-content: space-between; margin-bottom: 4px; }
     .filter-summary div:last-child { margin-bottom: 0; font-weight: bold; border-top: 1px dashed #74c0fc; padding-top: 4px; }
 
-    /* 削除ボタン・申請関連スタイル */
     .btn-delete { width: auto; padding: 4px 8px; font-size: 0.8em; background: #dc3545; color: white; border: none; border-radius: 4px; margin-top: 0; }
     .btn-delete:hover { background: #bd2130; }
     .pending-badge { font-size: 0.8em; color: #e67e22; background: #fef5e7; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
@@ -50,15 +46,20 @@
     .btn-approve { background: #28a745; }
     .btn-reject { background: #6c757d; }
 
-    /* オプション用チェックボックス */
     .checkbox-label { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-weight: normal; font-size: 0.85em; cursor: pointer; }
     .checkbox-label input { width: auto; margin-top: 0; }
+
+    /* ログイン関連スタイル */
+    .login-status { background: #e2e3e5; padding: 8px 12px; border-radius: 6px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .login-status button { width: auto; padding: 4px 8px; font-size: 0.8em; margin-top: 0; background: #6c757d; }
+    .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+    .login-modal { background: white; padding: 24px; border-radius: 12px; width: 90%; max-width: 360px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
   </style>
 
   <!-- Firebase SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getDatabase, ref, push, onValue, set, remove, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    import { getDatabase, ref, push, onValue, set, remove, update, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyAmI46_HJP4T8gAx4upeCcF2eDNTXX-G6Q",
@@ -88,13 +89,23 @@
     document.getElementById('date').value = today;
 
     let rawDataCache = {};
-    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "default" };
+    let currentSettings = { nameA: "たくみ", nameB: "みく", currentEvent: "default" };
     let eventsList = { "default": "日常の貸し借り" };
+    let currentUser = localStorage.getItem(`room_${roomId}_user`) || null;
+
+    // パスワードの簡易ハッシュ化関数
+    async function hashPin(pin) {
+      const msgBuffer = new TextEncoder().encode(pin);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
 
     onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
       const data = snapshot.val();
       if (data) currentSettings = { ...currentSettings, ...data };
       updateNamesUI();
+      checkLoginStatus();
     });
 
     onValue(ref(db, `rooms/${roomId}/events`), (snapshot) => {
@@ -110,9 +121,64 @@
       updateQuickNotes();
     });
 
+    function checkLoginStatus() {
+      if (!currentUser) {
+        document.getElementById('login-modal-overlay').style.display = 'flex';
+      } else {
+        document.getElementById('login-modal-overlay').style.display = 'none';
+        const currentPayerName = currentUser === 'A' ? currentSettings.nameA : currentSettings.nameB;
+        document.getElementById('logged-in-name').innerText = currentPayerName;
+      }
+    }
+
+    window.loginUser = async function() {
+      const selectedUser = document.getElementById('login-user-select').value;
+      const pinInput = document.getElementById('login-pin-input').value.trim();
+
+      if (!pinInput || pinInput.length < 4) {
+        return alert('4桁以上の暗証番号を入力してください');
+      }
+
+      const hashedPin = await hashPin(pinInput);
+      const userRef = ref(db, `rooms/${roomId}/users/${selectedUser}`);
+      const snapshot = await get(userRef);
+
+      if (snapshot.exists()) {
+        const savedHash = snapshot.val();
+        if (savedHash === hashedPin) {
+          currentUser = selectedUser;
+          localStorage.setItem(`room_${roomId}_user`, currentUser);
+          checkLoginStatus();
+          renderApp();
+        } else {
+          alert('暗証番号が正しくありません');
+        }
+      } else {
+        // 初回登録
+        if (confirm(`${selectedUser === 'A' ? currentSettings.nameA : currentSettings.nameB} さんの暗証番号を新規登録しますか？`)) {
+          await set(userRef, hashedPin);
+          currentUser = selectedUser;
+          localStorage.setItem(`room_${roomId}_user`, currentUser);
+          checkLoginStatus();
+          renderApp();
+        }
+      }
+    };
+
+    window.logoutUser = function() {
+      localStorage.removeItem(`room_${roomId}_user`);
+      currentUser = null;
+      document.getElementById('login-pin-input').value = '';
+      checkLoginStatus();
+    };
+
     function updateNamesUI() {
       document.getElementById('name-a-input').value = currentSettings.nameA;
       document.getElementById('name-b-input').value = currentSettings.nameB;
+
+      const loginSelect = document.getElementById('login-user-select');
+      loginSelect.options[0].text = currentSettings.nameA;
+      loginSelect.options[1].text = currentSettings.nameB;
 
       const payerSelect = document.getElementById('payer');
       payerSelect.options[0].text = currentSettings.nameA;
@@ -180,30 +246,36 @@
         const itemEvent = item.eventId || 'default';
         const payerName = item.payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
 
-        // 削除申請中の場合、承認ボックスを表示
+        // 削除申請中の場合
         if (item.deleteRequested) {
-          pendingCount++;
           const requestedByName = item.deleteRequestedBy === 'A' ? currentSettings.nameA : currentSettings.nameB;
-          const approvalDiv = document.createElement('div');
-          approvalDiv.className = 'approval-item';
-          approvalDiv.innerHTML = `
-            <div><strong>${requestedByName}</strong>が削除を申請中:</div>
-            <div>${item.date} ${payerName} ¥${item.amount.toLocaleString()} (${item.note})</div>
-            <div class="approval-btns">
-              <button class="btn-approve" onclick="approveDelete('${id}')">許可して削除</button>
-              <button class="btn-reject" onclick="rejectDelete('${id}')">拒否</button>
-            </div>
-          `;
-          approvalBox.appendChild(approvalDiv);
+          const isMyRequest = item.deleteRequestedBy === currentUser;
+
+          // 自分が申請したのではない（相手が申請した）リクエストのみ承認ボタンを表示
+          if (!isMyRequest) {
+            pendingCount++;
+            const approvalDiv = document.createElement('div');
+            approvalDiv.className = 'approval-item';
+            approvalDiv.innerHTML = `
+              <div><strong>${requestedByName}</strong>が削除を申請中:</div>
+              <div>${item.date} ${payerName} ¥${item.amount.toLocaleString()} (${item.note})</div>
+              <div class="approval-btns">
+                <button class="btn-approve" onclick="approveDelete('${id}')">許可して削除</button>
+                <button class="btn-reject" onclick="rejectDelete('${id}')">拒否</button>
+              </div>
+            `;
+            approvalBox.appendChild(approvalDiv);
+          }
         }
 
         if (itemEvent === selectedEvent) {
           if (selectedMonth === 'all' || selectedMonth === itemMonth) {
-            // 削除申請中ではない場合のみ合計に加算
             if (!item.deleteRequested) {
               if (item.payer === 'A') totalA += item.amount;
               if (item.payer === 'B') totalB += item.amount;
             }
+
+            const isMyRequest = item.deleteRequestedBy === currentUser;
 
             const li = document.createElement('li');
             li.innerHTML = `
@@ -214,7 +286,9 @@
               <div class="item-body">
                 <span>¥${item.amount.toLocaleString()} (${item.note})</span>
                 ${item.deleteRequested 
-                  ? `<span class="pending-badge">削除許可待ち</span>` 
+                  ? (isMyRequest 
+                      ? `<div style="display:flex; align-items:center; gap:6px;"><span class="pending-badge">相手の承認待ち ⏳</span><button class="btn-delete" style="background:#6c757d;" onclick="rejectDelete('${id}')">取消</button></div>` 
+                      : `<span class="pending-badge">削除許可待ち</span>`)
                   : `<button class="btn-delete" onclick="requestDelete('${id}')">削除 🗑️</button>`
                 }
               </div>
@@ -224,7 +298,6 @@
         }
       });
 
-      // 承認待ちエリアの表示制御
       const approvalContainer = document.getElementById('approval-container');
       if (pendingCount > 0) {
         approvalContainer.style.display = 'block';
@@ -234,7 +307,6 @@
 
       updateMonthOptions(entries, selectedEvent, selectedMonth);
 
-      // フィルター後の集計結果を表示
       const nameA = currentSettings.nameA;
       const nameB = currentSettings.nameB;
       const filteredTotal = totalA + totalB;
@@ -245,7 +317,6 @@
         <div><span>絞り込み合計:</span><span>¥${filteredTotal.toLocaleString()}</span></div>
       `;
 
-      // 差額と清算の計算
       const diff = totalA - totalB;
       const settlementEl = document.getElementById('settlement');
 
@@ -280,7 +351,6 @@
       if (currentSelected === 'all') filterSelect.value = 'all';
     }
 
-    // タブ切り替え処理
     window.switchTab = function(tabName) {
       document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
@@ -345,23 +415,19 @@
       }
     };
 
-    // 削除申請
     window.requestDelete = function(itemId) {
-      const currentPayer = document.getElementById('payer').value;
       if (confirm('相手に削除申請を送りますか？（相手が許可すると完全に削除されます）')) {
         update(ref(db, `rooms/${roomId}/items/${itemId}`), {
           deleteRequested: true,
-          deleteRequestedBy: currentPayer
+          deleteRequestedBy: currentUser
         });
       }
     };
 
-    // 削除許可
     window.approveDelete = function(itemId) {
       remove(ref(db, `rooms/${roomId}/items/${itemId}`));
     };
 
-    // 削除拒否
     window.rejectDelete = function(itemId) {
       update(ref(db, `rooms/${roomId}/items/${itemId}`), {
         deleteRequested: false,
@@ -384,21 +450,43 @@
 </head>
 <body>
 
+  <!-- ログインモーダル -->
+  <div id="login-modal-overlay" class="login-overlay" style="display: none;">
+    <div class="login-modal">
+      <h3 style="margin-top: 0;">👤 ログイン</h3>
+      <p style="font-size: 0.85em; color: #666;">初回利用時は入力した暗証番号が新規登録されます。</p>
+      
+      <label>あなたのお名前</label>
+      <select id="login-user-select">
+        <option value="A">たくみ</option>
+        <option value="B">みく</option>
+      </select>
+
+      <label>暗証番号（4桁以上の数字）</label>
+      <input type="password" id="login-pin-input" placeholder="例: 1234" inputmode="numeric">
+
+      <button onclick="loginUser()">ログイン</button>
+    </div>
+  </div>
+
   <h2>💰 ふたりの貸し借りメモ</h2>
 
-  <!-- 清算結果表示 (常に上部に表示) -->
+  <!-- ログイン情報ステータス表示 -->
+  <div class="login-status">
+    <span>ログイン中: <strong id="logged-in-name">--</strong></span>
+    <button onclick="logoutUser()">切替 / ログアウト</button>
+  </div>
+
   <div class="card">
     <div id="settlement" class="result">読み込み中...</div>
   </div>
 
-  <!-- タブメニュー -->
   <div class="tab-menu">
     <button id="tab-btn-input" class="tab-btn active" onclick="switchTab('input')">✍️ 入力</button>
     <button id="tab-btn-history" class="tab-btn" onclick="switchTab('history')">📜 履歴</button>
     <button id="tab-btn-settings" class="tab-btn" onclick="switchTab('settings')">⚙️ 設定</button>
   </div>
 
-  <!-- 1. 入力タブ -->
   <div id="tab-input" class="tab-content active">
     <div class="card">
       <h3>立て替えを入力</h3>
@@ -406,10 +494,10 @@
       <label>日付</label>
       <input type="date" id="date">
 
-      <label>払った人（あなた）</label>
+      <label>払った人</label>
       <select id="payer">
-        <option value="A">Aさん</option>
-        <option value="B">Bさん</option>
+        <option value="A">たくみ</option>
+        <option value="B">みく</option>
       </select>
 
       <label>金額（円）</label>
@@ -428,9 +516,7 @@
     </div>
   </div>
 
-  <!-- 2. 履歴タブ -->
   <div id="tab-history" class="tab-content">
-    <!-- 削除承認待ちエリア -->
     <div id="approval-container" class="card approval-card" style="display: none;">
       <h4>⚠️ 削除の承認リクエスト</h4>
       <div id="approval-requests-box"></div>
@@ -451,21 +537,19 @@
         </select>
       </div>
 
-      <!-- 絞り込み結果の合計金額エリア -->
       <div class="filter-summary" id="filter-summary-box"></div>
 
       <ul id="history"></ul>
     </div>
   </div>
 
-  <!-- 3. 設定タブ -->
   <div id="tab-settings" class="tab-content">
     <div class="card">
       <h3>⚙️ イベント作成・設定</h3>
 
       <label>新しいイベントを作る（旅行など）</label>
       <div class="flex-inputs">
-        <input type="text" id="new-event-name" placeholder="例: 沖縄旅行">
+        <input type="text" id="new-event-name" placeholder="例:旅行">
         <button onclick="addEvent()" style="width: auto; margin-top:6px; white-space:nowrap;">作成</button>
       </div>
 
@@ -475,17 +559,16 @@
       <div class="flex-inputs">
         <div>
           <span style="font-size:0.8em; color:#666;">Aさんの名前</span>
-          <input type="text" id="name-a-input" value="Aさん">
+          <input type="text" id="name-a-input" value="たくみ">
         </div>
         <div>
           <span style="font-size:0.8em; color:#666;">Bさんの名前</span>
-          <input type="text" id="name-b-input" value="Bさん">
+          <input type="text" id="name-b-input" value="みく">
         </div>
       </div>
       <button onclick="saveNames()" style="background:#28a745;">名前を保存</button>
     </div>
 
-    <!-- 部屋情報と共有リンク -->
     <div class="card">
       <div class="room-info">
         部屋コード: <strong id="room-id">--</strong>
