@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>リアルタイムふたりの貸し借りメモ</title>
+  <style>
+    body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 16px; background: #f4f6f8; color: #333; }
+    .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
+    h2 { text-align: center; color: #2c3e50; margin-top: 0; }
+    label { display: block; margin-top: 10px; font-weight: bold; font-size: 0.9em; }
+    input, select, button { width: 100%; padding: 12px; margin-top: 6px; box-sizing: border-box; border-radius: 8px; border: 1px solid #ccc; font-size: 1em; }
+    button { background: #007bff; color: white; border: none; font-weight: bold; cursor: pointer; margin-top: 12px; }
+    button:hover { background: #0056b3; }
+    .result { font-size: 1.2em; font-weight: bold; color: #28a745; text-align: center; padding: 10px 0; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+    .room-info { background: #e9ecef; padding: 8px; border-radius: 6px; font-size: 0.85em; text-align: center; word-break: break-all; }
+  </style>
+
+  <!-- Firebase SDK の読み込み -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getDatabase, ref, push, onValue, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+    // ご自身のFirebase設定情報を組み込み済み
+    const firebaseConfig = {
+      apiKey: "AIzaSyAmI46_HJP4T8gAx4upeCcF2eDNTXX-G6Q",
+      authDomain: "payment-30c94.firebaseapp.com",
+      databaseURL: "https://payment-30c94-default-rtdb.firebaseio.com",
+      projectId: "payment-30c94",
+      storageBucket: "payment-30c94.firebasestorage.app",
+      messagingSenderId: "577725674845",
+      appId: "1:577725674845:web:683b4d28b97ff3817aa4b4",
+      measurementId: "G-H98HFNV6TX"
+    };
+
+    // Firebaseの初期化
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // 部屋ID（ルーム名）を取得または自動生成（URLの ?room=〇〇 で管理）
+    const urlParams = new URLSearchParams(window.location.search);
+    let roomId = urlParams.get('room');
+    if (!roomId) {
+      roomId = Math.random().toString(36).substring(2, 8); // ランダムな6文字
+      window.history.replaceState(null, null, `?room=${roomId}`);
+    }
+
+    document.getElementById('room-id').innerText = roomId;
+    document.getElementById('share-url').value = window.location.href;
+
+    const itemsRef = ref(db, `rooms/${roomId}/items`);
+
+    // データのリアルタイム監視 (どちらかが更新したら自動実行)
+    onValue(itemsRef, (snapshot) => {
+      const data = snapshot.val() || {};
+      let totalA = 0;
+      let totalB = 0;
+      const historyList = document.getElementById('history');
+      historyList.innerHTML = '';
+
+      Object.entries(data).reverse().forEach(([id, item]) => {
+        if (item.payer === 'A') totalA += item.amount;
+        if (item.payer === 'B') totalB += item.amount;
+
+        const li = document.createElement('li');
+        li.innerHTML = `
+          <span><strong>${item.payer}さん</strong> が ¥${item.amount.toLocaleString()} 支払い (${item.note})</span>
+        `;
+        historyList.appendChild(li);
+      });
+
+      // 差額と清算の計算
+      const diff = totalA - totalB;
+      const settlementEl = document.getElementById('settlement');
+      if (diff === 0) {
+        settlementEl.innerText = "貸し借りは現在ありません 👏";
+      } else if (diff > 0) {
+        settlementEl.innerText = `Bさん → Aさん へ ¥${(diff / 2).toLocaleString()} 支払う`;
+      } else {
+        settlementEl.innerText = `Aさん → Bさん へ ¥${(Math.abs(diff) / 2).toLocaleString()} 支払う`;
+      }
+    });
+
+    // データ追加処理
+    window.addEntry = function() {
+      const payer = document.getElementById('payer').value;
+      const amount = Number(document.getElementById('amount').value);
+      const note = document.getElementById('note').value || 'メモなし';
+
+      if (!amount) return alert('金額を入力してください');
+
+      push(itemsRef, {
+        payer: payer,
+        amount: amount,
+        note: note,
+        timestamp: Date.now()
+      });
+
+      document.getElementById('amount').value = '';
+      document.getElementById('note').value = '';
+    };
+
+    // 清算・リセット処理
+    window.clearAll = function() {
+      if (confirm('すべての履歴を消去して清算済みにしますか？')) {
+        remove(itemsRef);
+      }
+    };
+
+    // URLコピー処理
+    window.copyShareUrl = function() {
+      const copyText = document.getElementById('share-url');
+      navigator.clipboard.writeText(copyText.value);
+      alert('共有用URLをコピーしました！LINEなどで相手に送信してください。');
+    };
+  </script>
+</head>
+<body>
+
+  <h2>💰 ふたりの貸し借りメモ</h2>
+
+  <!-- 部屋情報と共有リンク -->
+  <div class="card">
+    <div class="room-info">
+      部屋コード: <strong id="room-id">--</strong>
+    </div>
+    <input type="text" id="share-url" readonly style="font-size:0.8em; color:#666;">
+    <button onclick="copyShareUrl()" style="background:#17a2b8;">相手に送るURLをコピー</button>
+  </div>
+
+  <!-- 清算結果表示 -->
+  <div class="card">
+    <div id="settlement" class="result">読み込み中...</div>
+  </div>
+
+  <!-- 支払いの入力フォーム -->
+  <div class="card">
+    <h3>立て替えを入力</h3>
+    <label>払った人</label>
+    <select id="payer">
+      <option value="A">Aさん</option>
+      <option value="B">Bさん</option>
+    </select>
+
+    <label>金額（円）</label>
+    <input type="number" id="amount" placeholder="例: 1500" inputmode="numeric">
+
+    <label>内容・メモ</label>
+    <input type="text" id="note" placeholder="例: スーパーで買い物">
+
+    <button onclick="addEntry()">追加する</button>
+  </div>
+
+  <!-- 履歴表示 -->
+  <div class="card">
+    <h3>履歴（自動同期）</h3>
+    <ul id="history"></ul>
+    <button onclick="clearAll()" style="background:#dc3545; margin-top:20px;">全データをリセット（清算完了）</button>
+  </div>
+
+</body>
+</html>
