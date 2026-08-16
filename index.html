@@ -37,14 +37,6 @@
 
     .btn-delete { width: auto; padding: 4px 8px; font-size: 0.8em; background: #dc3545; color: white; border: none; border-radius: 4px; margin-top: 0; }
     .btn-delete:hover { background: #bd2130; }
-    .pending-badge { font-size: 0.8em; color: #e67e22; background: #fef5e7; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
-    .approval-card { background: #fff3cd; border: 1px solid #ffeeba; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
-    .approval-card h4 { margin: 0 0 8px 0; color: #856404; font-size: 0.95em; }
-    .approval-item { font-size: 0.85em; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed #ffe8a1; }
-    .approval-btns { display: flex; gap: 8px; }
-    .approval-btns button { padding: 6px; font-size: 0.8em; margin-top: 4px; }
-    .btn-approve { background: #28a745; }
-    .btn-reject { background: #6c757d; }
 
     .checkbox-label { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-weight: normal; font-size: 0.85em; cursor: pointer; }
     .checkbox-label input { width: auto; margin-top: 0; }
@@ -53,12 +45,14 @@
     .login-status button { width: auto; padding: 4px 8px; font-size: 0.8em; margin-top: 0; background: #6c757d; }
     .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; z-index: 1000; }
     .login-modal { background: white; padding: 24px; border-radius: 12px; width: 90%; max-width: 360px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+    .btn-cancel { background: #6c757d; margin-top: 8px; }
+    .btn-cancel:hover { background: #5a6268; }
   </style>
 
   <!-- Firebase SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getDatabase, ref, push, onValue, set, remove, update, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    import { getDatabase, ref, push, onValue, set, remove, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyAmI46_HJP4T8gAx4upeCcF2eDNTXX-G6Q",
@@ -90,7 +84,7 @@
     let rawDataCache = {};
     let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "default" };
     let eventsList = { "default": "日常の貸し借り" };
-    let currentUser = localStorage.getItem(`room_${roomId}_user`) || null;
+    let pendingDeleteTargetId = null;
 
     async function hashPin(pin) {
       const msgBuffer = new TextEncoder().encode(pin);
@@ -103,7 +97,6 @@
       const data = snapshot.val();
       if (data) currentSettings = { ...currentSettings, ...data };
       updateNamesUI();
-      checkLoginStatus();
     });
 
     onValue(ref(db, `rooms/${roomId}/events`), (snapshot) => {
@@ -119,79 +112,55 @@
       updateQuickNotes();
     });
 
-    function checkLoginStatus() {
-      if (!currentUser) {
-        document.getElementById('login-modal-overlay').style.display = 'flex';
-      } else {
-        document.getElementById('login-modal-overlay').style.display = 'none';
-        const currentPayerName = currentUser === 'A' ? currentSettings.nameA : currentSettings.nameB;
-        document.getElementById('logged-in-name').innerText = currentPayerName;
-      }
-    }
+    // 削除前の認証モーダルを開く
+    window.requestDelete = function(itemId) {
+      pendingDeleteTargetId = itemId;
+      document.getElementById('login-pin-input').value = '';
+      document.getElementById('login-modal-overlay').style.display = 'flex';
+    };
 
-    window.loginUser = async function() {
-      const inputName = document.getElementById('login-name-input').value.trim();
+    // モーダル閉じる（キャンセル）
+    window.closeLoginModal = function() {
+      pendingDeleteTargetId = null;
+      document.getElementById('login-modal-overlay').style.display = 'none';
+    };
+
+    // 暗証番号を確認して削除を実行
+    window.confirmDeleteWithPin = async function() {
       const pinInput = document.getElementById('login-pin-input').value.trim();
-
-      if (!inputName) return alert('お名前を入力してください');
-      if (!pinInput || pinInput.length < 4) return alert('4桁以上の暗証番号を入力してください');
+      if (!pinInput) return alert('暗証番号を入力してください');
 
       const hashedPin = await hashPin(pinInput);
-      const usersRef = ref(db, `rooms/${roomId}/users`);
-      const snapshot = await get(usersRef);
-      const usersData = snapshot.val() || {};
+      const pinRef = ref(db, `rooms/${roomId}/deletePin`);
+      const snapshot = await get(pinRef);
 
-      // 既存ユーザーの照合（名前が一致するか）
-      let matchedUserKey = null;
-      if (usersData.A && usersData.A.name === inputName) matchedUserKey = 'A';
-      if (usersData.B && usersData.B.name === inputName) matchedUserKey = 'B';
-
-      if (matchedUserKey) {
-        // パスワード判定
-        if (usersData[matchedUserKey].pin === hashedPin) {
-          currentUser = matchedUserKey;
-          localStorage.setItem(`room_${roomId}_user`, currentUser);
-          checkLoginStatus();
-          renderApp();
+      if (snapshot.exists()) {
+        if (snapshot.val() === hashedPin) {
+          executeDelete();
         } else {
           alert('暗証番号が正しくありません');
         }
       } else {
-        // 新規登録枠の判定
-        let targetKey = null;
-        if (!usersData.A) {
-          targetKey = 'A';
-        } else if (!usersData.B) {
-          targetKey = 'B';
-        } else {
-          return alert('この部屋はすでに2人のユーザーが登録されています。名前を確認してください。');
-        }
-
-        if (confirm(`「${inputName}」さんとして暗証番号を新規登録しますか？`)) {
-          await set(ref(db, `rooms/${roomId}/users/${targetKey}`), {
-            name: inputName,
-            pin: hashedPin
-          });
-
-          // 設定上の名前も更新
-          if (targetKey === 'A') currentSettings.nameA = inputName;
-          if (targetKey === 'B') currentSettings.nameB = inputName;
-          await set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-
-          currentUser = targetKey;
-          localStorage.setItem(`room_${roomId}_user`, currentUser);
-          checkLoginStatus();
-          renderApp();
+        if (confirm('入力した暗証番号を削除用コードとして新規登録しますか？')) {
+          await set(pinRef, hashedPin);
+          executeDelete();
         }
       }
     };
 
+    function executeDelete() {
+      if (pendingDeleteTargetId) {
+        remove(ref(db, `rooms/${roomId}/items/${pendingDeleteTargetId}`));
+        pendingDeleteTargetId = null;
+        closeLoginModal();
+        alert('削除しました');
+      }
+    }
+
+    // ログアウト（認証情報クリア）
     window.logoutUser = function() {
       localStorage.removeItem(`room_${roomId}_user`);
-      currentUser = null;
-      document.getElementById('login-name-input').value = '';
-      document.getElementById('login-pin-input').value = '';
-      checkLoginStatus();
+      alert('ログアウトしました');
     };
 
     function updateNamesUI() {
@@ -251,11 +220,8 @@
       let totalA = 0;
       let totalB = 0;
       const historyList = document.getElementById('history');
-      const approvalBox = document.getElementById('approval-requests-box');
       
       historyList.innerHTML = '';
-      approvalBox.innerHTML = '';
-      let pendingCount = 0;
 
       const entries = Object.entries(rawDataCache).reverse();
 
@@ -264,34 +230,10 @@
         const itemEvent = item.eventId || 'default';
         const payerName = item.payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
 
-        if (item.deleteRequested) {
-          const requestedByName = item.deleteRequestedBy === 'A' ? currentSettings.nameA : currentSettings.nameB;
-          const isMyRequest = item.deleteRequestedBy === currentUser;
-
-          if (!isMyRequest) {
-            pendingCount++;
-            const approvalDiv = document.createElement('div');
-            approvalDiv.className = 'approval-item';
-            approvalDiv.innerHTML = `
-              <div><strong>${requestedByName}</strong>が削除を申請中:</div>
-              <div>${item.date} ${payerName} ¥${item.amount.toLocaleString()} (${item.note})</div>
-              <div class="approval-btns">
-                <button class="btn-approve" onclick="approveDelete('${id}')">許可して削除</button>
-                <button class="btn-reject" onclick="rejectDelete('${id}')">拒否</button>
-              </div>
-            `;
-            approvalBox.appendChild(approvalDiv);
-          }
-        }
-
         if (itemEvent === selectedEvent) {
           if (selectedMonth === 'all' || selectedMonth === itemMonth) {
-            if (!item.deleteRequested) {
-              if (item.payer === 'A') totalA += item.amount;
-              if (item.payer === 'B') totalB += item.amount;
-            }
-
-            const isMyRequest = item.deleteRequestedBy === currentUser;
+            if (item.payer === 'A') totalA += item.amount;
+            if (item.payer === 'B') totalB += item.amount;
 
             const li = document.createElement('li');
             li.innerHTML = `
@@ -301,25 +243,13 @@
               </div>
               <div class="item-body">
                 <span>¥${item.amount.toLocaleString()} (${item.note})</span>
-                ${item.deleteRequested 
-                  ? (isMyRequest 
-                      ? `<div style="display:flex; align-items:center; gap:6px;"><span class="pending-badge">相手の承認待ち ⏳</span><button class="btn-delete" style="background:#6c757d;" onclick="rejectDelete('${id}')">取消</button></div>` 
-                      : `<span class="pending-badge">削除許可待ち</span>`)
-                  : `<button class="btn-delete" onclick="requestDelete('${id}')">削除 🗑️</button>`
-                }
+                <button class="btn-delete" onclick="requestDelete('${id}')">削除 🗑️</button>
               </div>
             `;
             historyList.appendChild(li);
           }
         }
       });
-
-      const approvalContainer = document.getElementById('approval-container');
-      if (pendingCount > 0) {
-        approvalContainer.style.display = 'block';
-      } else {
-        approvalContainer.style.display = 'none';
-      }
 
       updateMonthOptions(entries, selectedEvent, selectedMonth);
 
@@ -416,8 +346,7 @@
         note: note,
         date: date,
         eventId: eventId,
-        timestamp: Date.now(),
-        deleteRequested: false
+        timestamp: Date.now()
       });
 
       document.getElementById('amount').value = '';
@@ -429,26 +358,6 @@
       } else {
         alert('追加しました！');
       }
-    };
-
-    window.requestDelete = function(itemId) {
-      if (confirm('相手に削除申請を送りますか？（相手が許可すると完全に削除されます）')) {
-        update(ref(db, `rooms/${roomId}/items/${itemId}`), {
-          deleteRequested: true,
-          deleteRequestedBy: currentUser
-        });
-      }
-    };
-
-    window.approveDelete = function(itemId) {
-      remove(ref(db, `rooms/${roomId}/items/${itemId}`));
-    };
-
-    window.rejectDelete = function(itemId) {
-      update(ref(db, `rooms/${roomId}/items/${itemId}`), {
-        deleteRequested: false,
-        deleteRequestedBy: null
-      });
     };
 
     window.onFilterChange = function() {
@@ -466,28 +375,26 @@
 </head>
 <body>
 
-  <!-- ログインモーダル -->
+  <!-- 削除認証用モーダル -->
   <div id="login-modal-overlay" class="login-overlay" style="display: none;">
     <div class="login-modal">
-      <h3 style="margin-top: 0;">👤 ログイン</h3>
-      <p style="font-size: 0.85em; color: #666;">初回利用時は入力したお名前と暗証番号で新規登録されます。</p>
-      
-      <label>あなたのお名前</label>
-      <input type="text" id="login-name-input" placeholder="例: ユーザーA">
+      <h3 style="margin-top: 0;">🔒 削除の確認</h3>
+      <p style="font-size: 0.85em; color: #666;">誤削除防止のため暗証番号を入力してください。</p>
 
       <label>暗証番号（4桁以上の数字）</label>
       <input type="password" id="login-pin-input" placeholder="例: 1234" inputmode="numeric">
 
-      <button onclick="loginUser()">ログイン</button>
+      <button onclick="confirmDeleteWithPin()">認証して削除</button>
+      <button class="btn-cancel" onclick="closeLoginModal()">キャンセル</button>
     </div>
   </div>
 
   <h2>💰 ふたりの貸し借りメモ</h2>
 
-  <!-- ログイン情報ステータス表示 -->
+  <!-- ログアウトボタン -->
   <div class="login-status">
-    <span>ログイン中: <strong id="logged-in-name">--</strong></span>
-    <button onclick="logoutUser()">切替 / ログアウト</button>
+    <span>共有メモ利用中</span>
+    <button onclick="logoutUser()">ログアウト</button>
   </div>
 
   <div class="card">
@@ -530,11 +437,6 @@
   </div>
 
   <div id="tab-history" class="tab-content">
-    <div id="approval-container" class="card approval-card" style="display: none;">
-      <h4>⚠️ 削除の承認リクエスト</h4>
-      <div id="approval-requests-box"></div>
-    </div>
-
     <div class="card">
       <h3>履歴・絞り込み</h3>
       
