@@ -7,7 +7,7 @@
   <style>
     body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 16px; background: #f4f6f8; color: #333; }
     .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
-    h2 { text-align: center; color: #2c3e50; margin-top: 0; }
+    h2, h3 { text-align: center; color: #2c3e50; margin-top: 0; }
     label { display: block; margin-top: 10px; font-weight: bold; font-size: 0.9em; }
     input, select, button { width: 100%; padding: 12px; margin-top: 6px; box-sizing: border-box; border-radius: 8px; border: 1px solid #ccc; font-size: 1em; }
     button { background: #007bff; color: white; border: none; font-weight: bold; cursor: pointer; margin-top: 12px; }
@@ -17,13 +17,16 @@
     li { padding: 12px 10px; border-bottom: 1px solid #eee; display: flex; flex-direction: column; gap: 4px; }
     .item-header { display: flex; justify-content: space-between; font-size: 0.85em; color: #666; }
     .item-body { font-size: 1em; }
-    .room-info { background: #e9ecef; padding: 8px; border-radius: 6px; font-size: 0.85em; text-align: center; word-break: break-all; }
+    .room-info { background: #e9ecef; padding: 8px; border-radius: 6px; font-size: 0.85em; text-align: center; word-break: break-all; margin-bottom: 12px; }
+    .filter-group { margin-bottom: 12px; }
+    .flex-inputs { display: flex; gap: 8px; }
+    .flex-inputs > div { flex: 1; }
   </style>
 
   <!-- Firebase SDK の読み込み -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getDatabase, ref, push, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    import { getDatabase, ref, push, onValue, set } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyAmI46_HJP4T8gAx4upeCcF2eDNTXX-G6Q",
@@ -54,44 +57,164 @@
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('date').value = today;
 
-    const itemsRef = ref(db, `rooms/${roomId}/items`);
+    const roomRef = ref(db, `rooms/${roomId}`);
+    let rawDataCache = {};
+    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "default" };
+    let eventsList = { "default": "日常の貸し借り" };
+
+    // 設定・名前の読み込みと同期
+    onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        currentSettings = { ...currentSettings, ...data };
+      }
+      updateNamesUI();
+    });
+
+    // イベント一覧の読み込みと同期
+    onValue(ref(db, `rooms/${roomId}/events`), (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        eventsList = data;
+      }
+      updateEventsUI();
+      renderApp();
+    });
 
     // データのリアルタイム監視
-    onValue(itemsRef, (snapshot) => {
-      const data = snapshot.val() || {};
+    onValue(ref(db, `rooms/${roomId}/items`), (snapshot) => {
+      rawDataCache = snapshot.val() || {};
+      renderApp();
+    });
+
+    function updateNamesUI() {
+      document.getElementById('name-a-input').value = currentSettings.nameA;
+      document.getElementById('name-b-input').value = currentSettings.nameB;
+
+      const payerSelect = document.getElementById('payer');
+      payerSelect.options[0].text = currentSettings.nameA;
+      payerSelect.options[1].text = currentSettings.nameB;
+
+      renderApp();
+    }
+
+    function updateEventsUI() {
+      const eventSelect = document.getElementById('event-filter');
+      eventSelect.innerHTML = '';
+      
+      Object.entries(eventsList).forEach(([key, name]) => {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = name;
+        if (key === currentSettings.currentEvent) opt.selected = true;
+        eventSelect.appendChild(opt);
+      });
+    }
+
+    // 画面再描画・計算処理
+    function renderApp() {
+      const selectedMonth = document.getElementById('month-filter').value;
+      const selectedEvent = document.getElementById('event-filter').value;
+
       let totalA = 0;
       let totalB = 0;
       const historyList = document.getElementById('history');
       historyList.innerHTML = '';
 
-      Object.entries(data).reverse().forEach(([id, item]) => {
-        if (item.payer === 'A') totalA += item.amount;
-        if (item.payer === 'B') totalB += item.amount;
+      const entries = Object.entries(rawDataCache).reverse();
 
-        const li = document.createElement('li');
-        li.innerHTML = `
-          <div class="item-header">
-            <span>📅 ${item.date || '日付未設定'}</span>
-            <span><strong>${item.payer}さん</strong></span>
-          </div>
-          <div class="item-body">
-            ¥${item.amount.toLocaleString()} (${item.note})
-          </div>
-        `;
-        historyList.appendChild(li);
+      entries.forEach(([id, item]) => {
+        const itemMonth = item.date ? item.date.substring(0, 7) : '';
+        const itemEvent = item.eventId || 'default';
+
+        // イベント絞り込み & 月絞り込み
+        if (itemEvent === selectedEvent) {
+          if (selectedMonth === 'all' || selectedMonth === itemMonth) {
+            const payerName = item.payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
+            if (item.payer === 'A') totalA += item.amount;
+            if (item.payer === 'B') totalB += item.amount;
+
+            const li = document.createElement('li');
+            li.innerHTML = `
+              <div class="item-header">
+                <span>📅 ${item.date || '日付未設定'}</span>
+                <span><strong>${payerName}</strong></span>
+              </div>
+              <div class="item-body">
+                ¥${item.amount.toLocaleString()} (${item.note})
+              </div>
+            `;
+            historyList.appendChild(li);
+          }
+        }
       });
+
+      updateMonthOptions(entries, selectedEvent, selectedMonth);
 
       // 差額と清算の計算
       const diff = totalA - totalB;
       const settlementEl = document.getElementById('settlement');
+      const nameA = currentSettings.nameA;
+      const nameB = currentSettings.nameB;
+
       if (diff === 0) {
         settlementEl.innerText = "貸し借りは現在ありません 👏";
       } else if (diff > 0) {
-        settlementEl.innerText = `Bさん → Aさん へ ¥${(diff / 2).toLocaleString()} 支払う`;
+        settlementEl.innerText = `${nameB} → ${nameA} へ ¥${(diff / 2).toLocaleString()} 支払う`;
       } else {
-        settlementEl.innerText = `Aさん → Bさん へ ¥${(Math.abs(diff) / 2).toLocaleString()} 支払う`;
+        settlementEl.innerText = `${nameA} → ${nameB} へ ¥${(Math.abs(diff) / 2).toLocaleString()} 支払う`;
       }
-    });
+    }
+
+    // 月選択肢の更新（選択中のイベント内の月だけ表示）
+    function updateMonthOptions(entries, selectedEvent, currentSelected) {
+      const filterSelect = document.getElementById('month-filter');
+      const months = new Set();
+
+      entries.forEach(([id, item]) => {
+        const itemEvent = item.eventId || 'default';
+        if (itemEvent === selectedEvent && item.date && item.date.length >= 7) {
+          months.add(item.date.substring(0, 7));
+        }
+      });
+
+      filterSelect.innerHTML = '<option value="all">すべての月</option>';
+      Array.from(months).sort().reverse().forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m.replace('-', '年') + '月';
+        if (m === currentSelected) opt.selected = true;
+        filterSelect.appendChild(opt);
+      });
+      if (currentSelected === 'all') filterSelect.value = 'all';
+    }
+
+    // イベント追加処理
+    window.addEvent = function() {
+      const nameInput = document.getElementById('new-event-name');
+      const eventName = nameInput.value.trim();
+      if (!eventName) return alert('イベント名を入力してください');
+
+      const eventId = 'event_' + Date.now();
+      eventsList[eventId] = eventName;
+      set(ref(db, `rooms/${roomId}/events`), eventsList);
+
+      currentSettings.currentEvent = eventId;
+      set(ref(db, `rooms/${roomId}/settings`), currentSettings);
+
+      nameInput.value = '';
+    };
+
+    // 名前保存処理
+    window.saveNames = function() {
+      const nameA = document.getElementById('name-a-input').value.trim() || 'Aさん';
+      const nameB = document.getElementById('name-b-input').value.trim() || 'Bさん';
+
+      currentSettings.nameA = nameA;
+      currentSettings.nameB = nameB;
+      set(ref(db, `rooms/${roomId}/settings`), currentSettings);
+      alert('名前の設定を保存しました！');
+    };
 
     // データ追加処理
     window.addEntry = function() {
@@ -99,14 +222,16 @@
       const amount = Number(document.getElementById('amount').value);
       const note = document.getElementById('note').value || 'メモなし';
       const date = document.getElementById('date').value;
+      const eventId = document.getElementById('event-filter').value;
 
       if (!amount) return alert('金額を入力してください');
 
-      push(itemsRef, {
+      push(ref(db, `rooms/${roomId}/items`), {
         payer: payer,
         amount: amount,
         note: note,
         date: date,
+        eventId: eventId,
         timestamp: Date.now()
       });
 
@@ -115,7 +240,12 @@
       document.getElementById('date').value = today;
     };
 
-    // URLコピー処理
+    window.onFilterChange = function() {
+      currentSettings.currentEvent = document.getElementById('event-filter').value;
+      set(ref(db, `rooms/${roomId}/settings`), currentSettings);
+      renderApp();
+    };
+
     window.copyShareUrl = function() {
       const copyText = document.getElementById('share-url');
       navigator.clipboard.writeText(copyText.value);
@@ -126,15 +256,6 @@
 <body>
 
   <h2>💰 ふたりの貸し借りメモ</h2>
-
-  <!-- 部屋情報と共有リンク -->
-  <div class="card">
-    <div class="room-info">
-      部屋コード: <strong id="room-id">--</strong>
-    </div>
-    <input type="text" id="share-url" readonly style="font-size:0.8em; color:#666;">
-    <button onclick="copyShareUrl()" style="background:#17a2b8;">相手に送るURLをコピー</button>
-  </div>
 
   <!-- 清算結果表示 -->
   <div class="card">
@@ -166,7 +287,55 @@
   <!-- 履歴表示 -->
   <div class="card">
     <h3>履歴（自動同期）</h3>
+    
+    <div class="filter-group">
+      <label for="event-filter">表示中のイベント/テーマ</label>
+      <select id="event-filter" onchange="onFilterChange()"></select>
+    </div>
+
+    <div class="filter-group">
+      <label for="month-filter">表示する月</label>
+      <select id="month-filter" onchange="onFilterChange()">
+        <option value="all">すべての月</option>
+      </select>
+    </div>
+
     <ul id="history"></ul>
+  </div>
+
+  <!-- イベント作成・名前設定 -->
+  <div class="card">
+    <h3>⚙️ 設定・イベント作成</h3>
+
+    <label>新しいイベントを作る（旅行など）</label>
+    <div class="flex-inputs">
+      <input type="text" id="new-event-name" placeholder="例: 沖縄旅行">
+      <button onclick="addEvent()" style="width: auto; margin-top:6px; white-space:nowrap;">作成</button>
+    </div>
+
+    <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
+
+    <label>名前の変更</label>
+    <div class="flex-inputs">
+      <div>
+        <span style="font-size:0.8em; color:#666;">Aさんの名前</span>
+        <input type="text" id="name-a-input" value="Aさん">
+      </div>
+      <div>
+        <span style="font-size:0.8em; color:#666;">Bさんの名前</span>
+        <input type="text" id="name-b-input" value="Bさん">
+      </div>
+    </div>
+    <button onclick="saveNames()" style="background:#28a745;">名前を保存</button>
+  </div>
+
+  <!-- 部屋情報と共有リンク（一番下） -->
+  <div class="card">
+    <div class="room-info">
+      部屋コード: <strong id="room-id">--</strong>
+    </div>
+    <input type="text" id="share-url" readonly style="font-size:0.8em; color:#666;">
+    <button onclick="copyShareUrl()" style="background:#17a2b8;">相手に送るURLをコピー</button>
   </div>
 
 </body>
