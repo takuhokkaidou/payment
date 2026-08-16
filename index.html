@@ -89,11 +89,10 @@
     document.getElementById('date').value = today;
 
     let rawDataCache = {};
-    let currentSettings = { nameA: "たくみ", nameB: "みく", currentEvent: "default" };
+    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "default" };
     let eventsList = { "default": "日常の貸し借り" };
     let currentUser = localStorage.getItem(`room_${roomId}_user`) || null;
 
-    // パスワードの簡易ハッシュ化関数
     async function hashPin(pin) {
       const msgBuffer = new TextEncoder().encode(pin);
       const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
@@ -154,7 +153,6 @@
           alert('暗証番号が正しくありません');
         }
       } else {
-        // 初回登録
         if (confirm(`${selectedUser === 'A' ? currentSettings.nameA : currentSettings.nameB} さんの暗証番号を新規登録しますか？`)) {
           await set(userRef, hashedPin);
           currentUser = selectedUser;
@@ -246,12 +244,10 @@
         const itemEvent = item.eventId || 'default';
         const payerName = item.payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
 
-        // 削除申請中の場合
         if (item.deleteRequested) {
           const requestedByName = item.deleteRequestedBy === 'A' ? currentSettings.nameA : currentSettings.nameB;
           const isMyRequest = item.deleteRequestedBy === currentUser;
 
-          // 自分が申請したのではない（相手が申請した）リクエストのみ承認ボタンを表示
           if (!isMyRequest) {
             pendingCount++;
             const approvalDiv = document.createElement('div');
@@ -458,8 +454,8 @@
       
       <label>あなたのお名前</label>
       <select id="login-user-select">
-        <option value="A">たくみ</option>
-        <option value="B">みく</option>
+        <option value="A">Aさん</option>
+        <option value="B">Bさん</option>
       </select>
 
       <label>暗証番号（4桁以上の数字）</label>
@@ -496,8 +492,8 @@
 
       <label>払った人</label>
       <select id="payer">
-        <option value="A">たくみ</option>
-        <option value="B">みく</option>
+        <option value="A">Aさん</option>
+        <option value="B">Bさん</option>
       </select>
 
       <label>金額（円）</label>
@@ -549,7 +545,7 @@
 
       <label>新しいイベントを作る（旅行など）</label>
       <div class="flex-inputs">
-        <input type="text" id="new-event-name" placeholder="例:旅行">
+        <input type="text" id="new-event-name" placeholder="例: 沖縄旅行">
         <button onclick="addEvent()" style="width: auto; margin-top:6px; white-space:nowrap;">作成</button>
       </div>
 
