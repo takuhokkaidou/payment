@@ -49,7 +49,6 @@
     .checkbox-label { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-weight: normal; font-size: 0.85em; cursor: pointer; }
     .checkbox-label input { width: auto; margin-top: 0; }
 
-    /* ログイン関連スタイル */
     .login-status { background: #e2e3e5; padding: 8px 12px; border-radius: 6px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
     .login-status button { width: auto; padding: 4px 8px; font-size: 0.8em; margin-top: 0; background: #6c757d; }
     .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; z-index: 1000; }
@@ -131,21 +130,26 @@
     }
 
     window.loginUser = async function() {
-      const selectedUser = document.getElementById('login-user-select').value;
+      const inputName = document.getElementById('login-name-input').value.trim();
       const pinInput = document.getElementById('login-pin-input').value.trim();
 
-      if (!pinInput || pinInput.length < 4) {
-        return alert('4桁以上の暗証番号を入力してください');
-      }
+      if (!inputName) return alert('お名前を入力してください');
+      if (!pinInput || pinInput.length < 4) return alert('4桁以上の暗証番号を入力してください');
 
       const hashedPin = await hashPin(pinInput);
-      const userRef = ref(db, `rooms/${roomId}/users/${selectedUser}`);
-      const snapshot = await get(userRef);
+      const usersRef = ref(db, `rooms/${roomId}/users`);
+      const snapshot = await get(usersRef);
+      const usersData = snapshot.val() || {};
 
-      if (snapshot.exists()) {
-        const savedHash = snapshot.val();
-        if (savedHash === hashedPin) {
-          currentUser = selectedUser;
+      // 既存ユーザーの照合（名前が一致するか）
+      let matchedUserKey = null;
+      if (usersData.A && usersData.A.name === inputName) matchedUserKey = 'A';
+      if (usersData.B && usersData.B.name === inputName) matchedUserKey = 'B';
+
+      if (matchedUserKey) {
+        // パスワード判定
+        if (usersData[matchedUserKey].pin === hashedPin) {
+          currentUser = matchedUserKey;
           localStorage.setItem(`room_${roomId}_user`, currentUser);
           checkLoginStatus();
           renderApp();
@@ -153,9 +157,28 @@
           alert('暗証番号が正しくありません');
         }
       } else {
-        if (confirm(`${selectedUser === 'A' ? currentSettings.nameA : currentSettings.nameB} さんの暗証番号を新規登録しますか？`)) {
-          await set(userRef, hashedPin);
-          currentUser = selectedUser;
+        // 新規登録枠の判定
+        let targetKey = null;
+        if (!usersData.A) {
+          targetKey = 'A';
+        } else if (!usersData.B) {
+          targetKey = 'B';
+        } else {
+          return alert('この部屋はすでに2人のユーザーが登録されています。名前を確認してください。');
+        }
+
+        if (confirm(`「${inputName}」さんとして暗証番号を新規登録しますか？`)) {
+          await set(ref(db, `rooms/${roomId}/users/${targetKey}`), {
+            name: inputName,
+            pin: hashedPin
+          });
+
+          // 設定上の名前も更新
+          if (targetKey === 'A') currentSettings.nameA = inputName;
+          if (targetKey === 'B') currentSettings.nameB = inputName;
+          await set(ref(db, `rooms/${roomId}/settings`), currentSettings);
+
+          currentUser = targetKey;
           localStorage.setItem(`room_${roomId}_user`, currentUser);
           checkLoginStatus();
           renderApp();
@@ -166,6 +189,7 @@
     window.logoutUser = function() {
       localStorage.removeItem(`room_${roomId}_user`);
       currentUser = null;
+      document.getElementById('login-name-input').value = '';
       document.getElementById('login-pin-input').value = '';
       checkLoginStatus();
     };
@@ -173,10 +197,6 @@
     function updateNamesUI() {
       document.getElementById('name-a-input').value = currentSettings.nameA;
       document.getElementById('name-b-input').value = currentSettings.nameB;
-
-      const loginSelect = document.getElementById('login-user-select');
-      loginSelect.options[0].text = currentSettings.nameA;
-      loginSelect.options[1].text = currentSettings.nameB;
 
       const payerSelect = document.getElementById('payer');
       payerSelect.options[0].text = currentSettings.nameA;
@@ -450,13 +470,10 @@
   <div id="login-modal-overlay" class="login-overlay" style="display: none;">
     <div class="login-modal">
       <h3 style="margin-top: 0;">👤 ログイン</h3>
-      <p style="font-size: 0.85em; color: #666;">初回利用時は入力した暗証番号が新規登録されます。</p>
+      <p style="font-size: 0.85em; color: #666;">初回利用時は入力したお名前と暗証番号で新規登録されます。</p>
       
       <label>あなたのお名前</label>
-      <select id="login-user-select">
-        <option value="A">Aさん</option>
-        <option value="B">Bさん</option>
-      </select>
+      <input type="text" id="login-name-input" placeholder="例: ユーザーA">
 
       <label>暗証番号（4桁以上の数字）</label>
       <input type="password" id="login-pin-input" placeholder="例: 1234" inputmode="numeric">
