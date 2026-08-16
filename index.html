@@ -21,6 +21,11 @@
     .filter-group { margin-bottom: 12px; }
     .flex-inputs { display: flex; gap: 8px; }
     .flex-inputs > div { flex: 1; }
+    
+    /* よく使うメモボタン用のスタイル */
+    .quick-notes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .note-btn { width: auto; padding: 6px 12px; font-size: 0.85em; background: #e9ecef; color: #495057; border: 1px solid #ced4da; margin-top: 0; border-radius: 16px; }
+    .note-btn:hover { background: #dee2e6; }
   </style>
 
   <!-- Firebase SDK の読み込み -->
@@ -85,6 +90,7 @@
     onValue(ref(db, `rooms/${roomId}/items`), (snapshot) => {
       rawDataCache = snapshot.val() || {};
       renderApp();
+      updateQuickNotes();
     });
 
     function updateNamesUI() {
@@ -108,6 +114,36 @@
         opt.textContent = name;
         if (key === currentSettings.currentEvent) opt.selected = true;
         eventSelect.appendChild(opt);
+      });
+    }
+
+    // よく使うメモ（頻出順）を計算してボタン表示
+    function updateQuickNotes() {
+      const noteCounts = {};
+      Object.values(rawDataCache).forEach(item => {
+        const note = (item.note || '').trim();
+        if (note && note !== 'メモなし') {
+          noteCounts[note] = (noteCounts[note] || 0) + 1;
+        }
+      });
+
+      // 出現回数順にソートして上位5件を取得
+      const sortedNotes = Object.keys(noteCounts)
+        .sort((a, b) => noteCounts[b] - noteCounts[a])
+        .slice(0, 5);
+
+      const quickNotesContainer = document.getElementById('quick-notes');
+      quickNotesContainer.innerHTML = '';
+
+      sortedNotes.forEach(note => {
+        const btn = document.createElement('button');
+        btn.className = 'note-btn';
+        btn.type = 'button';
+        btn.textContent = note;
+        btn.onclick = () => {
+          document.getElementById('note').value = note;
+        };
+        quickNotesContainer.appendChild(btn);
       });
     }
 
@@ -166,7 +202,7 @@
       }
     }
 
-    // 月選択肢の更新（選択中のイベント内の月だけ表示）
+    // 月選択肢の更新
     function updateMonthOptions(entries, selectedEvent, currentSelected) {
       const filterSelect = document.getElementById('month-filter');
       const months = new Set();
@@ -280,6 +316,7 @@
 
     <label>内容・メモ</label>
     <input type="text" id="note" placeholder="例: スーパーで買い物">
+    <div class="quick-notes" id="quick-notes"></div>
 
     <button onclick="addEntry()">追加する</button>
   </div>
