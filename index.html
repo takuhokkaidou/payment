@@ -14,16 +14,17 @@
     button:hover { background: #0056b3; }
     .result { font-size: 1.2em; font-weight: bold; color: #28a745; text-align: center; padding: 10px 0; }
     ul { list-style: none; padding: 0; margin: 0; }
-    li { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+    li { padding: 12px 10px; border-bottom: 1px solid #eee; display: flex; flex-direction: column; gap: 4px; }
+    .item-header { display: flex; justify-content: space-between; font-size: 0.85em; color: #666; }
+    .item-body { font-size: 1em; }
     .room-info { background: #e9ecef; padding: 8px; border-radius: 6px; font-size: 0.85em; text-align: center; word-break: break-all; }
   </style>
 
   <!-- Firebase SDK の読み込み -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getDatabase, ref, push, onValue, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    import { getDatabase, ref, push, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
-    // ご自身のFirebase設定情報を組み込み済み
     const firebaseConfig = {
       apiKey: "AIzaSyAmI46_HJP4T8gAx4upeCcF2eDNTXX-G6Q",
       authDomain: "payment-30c94.firebaseapp.com",
@@ -35,24 +36,27 @@
       measurementId: "G-H98HFNV6TX"
     };
 
-    // Firebaseの初期化
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    // 部屋ID（ルーム名）を取得または自動生成（URLの ?room=〇〇 で管理）
+    // 部屋IDを取得または自動生成
     const urlParams = new URLSearchParams(window.location.search);
     let roomId = urlParams.get('room');
     if (!roomId) {
-      roomId = Math.random().toString(36).substring(2, 8); // ランダムな6文字
+      roomId = Math.random().toString(36).substring(2, 8);
       window.history.replaceState(null, null, `?room=${roomId}`);
     }
 
     document.getElementById('room-id').innerText = roomId;
     document.getElementById('share-url').value = window.location.href;
 
+    // 今日の日付をデフォルト設定 (YYYY-MM-DD)
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('date').value = today;
+
     const itemsRef = ref(db, `rooms/${roomId}/items`);
 
-    // データのリアルタイム監視 (どちらかが更新したら自動実行)
+    // データのリアルタイム監視
     onValue(itemsRef, (snapshot) => {
       const data = snapshot.val() || {};
       let totalA = 0;
@@ -66,7 +70,13 @@
 
         const li = document.createElement('li');
         li.innerHTML = `
-          <span><strong>${item.payer}さん</strong> が ¥${item.amount.toLocaleString()} 支払い (${item.note})</span>
+          <div class="item-header">
+            <span>📅 ${item.date || '日付未設定'}</span>
+            <span><strong>${item.payer}さん</strong></span>
+          </div>
+          <div class="item-body">
+            ¥${item.amount.toLocaleString()} (${item.note})
+          </div>
         `;
         historyList.appendChild(li);
       });
@@ -88,6 +98,7 @@
       const payer = document.getElementById('payer').value;
       const amount = Number(document.getElementById('amount').value);
       const note = document.getElementById('note').value || 'メモなし';
+      const date = document.getElementById('date').value;
 
       if (!amount) return alert('金額を入力してください');
 
@@ -95,18 +106,13 @@
         payer: payer,
         amount: amount,
         note: note,
+        date: date,
         timestamp: Date.now()
       });
 
       document.getElementById('amount').value = '';
       document.getElementById('note').value = '';
-    };
-
-    // 清算・リセット処理
-    window.clearAll = function() {
-      if (confirm('すべての履歴を消去して清算済みにしますか？')) {
-        remove(itemsRef);
-      }
+      document.getElementById('date').value = today;
     };
 
     // URLコピー処理
@@ -138,6 +144,10 @@
   <!-- 支払いの入力フォーム -->
   <div class="card">
     <h3>立て替えを入力</h3>
+    
+    <label>日付</label>
+    <input type="date" id="date">
+
     <label>払った人</label>
     <select id="payer">
       <option value="A">Aさん</option>
@@ -157,7 +167,6 @@
   <div class="card">
     <h3>履歴（自動同期）</h3>
     <ul id="history"></ul>
-    <button onclick="clearAll()" style="background:#dc3545; margin-top:20px;">全データをリセット（清算完了）</button>
   </div>
 
 </body>
