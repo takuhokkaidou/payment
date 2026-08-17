@@ -38,6 +38,8 @@
     .btn-delete { width: auto; padding: 4px 8px; font-size: 0.8em; background: #dc3545; color: white; border: none; border-radius: 4px; margin-top: 0; }
     .btn-delete:hover { background: #bd2130; }
     .pending-badge { font-size: 0.8em; color: #e67e22; background: #fef5e7; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+    .settled-badge { font-size: 0.8em; color: #28a745; background: #e8f5e9; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 4px; }
+    
     .approval-card { background: #fff3cd; border: 1px solid #ffeeba; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
     .approval-card h4 { margin: 0 0 8px 0; color: #856404; font-size: 0.95em; }
     .approval-item { font-size: 0.85em; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed #ffe8a1; }
@@ -90,7 +92,7 @@
     let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all" };
     let eventsList = { "default": "日常の貸し借り" };
     let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
-    let currentSettlementData = null; // 清算用データを保持
+    let currentSettlementData = null;
 
     onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
       const data = snapshot.val();
@@ -135,24 +137,29 @@
 
     function updateEventsUI() {
       const eventSelect = document.getElementById('event-filter');
-      eventSelect.innerHTML = '<option value="all">すべてのイベント/テーマ</option>';
+      const selectedVal = currentSettings.currentEvent;
+      
+      eventSelect.innerHTML = `
+        <option value="all">すべてのイベント/テーマ</option>
+        <option value="unsettled">未清算の項目のみ</option>
+        <option value="settled">清算済の項目のみ</option>
+      `;
       
       Object.entries(eventsList).forEach(([key, name]) => {
         const opt = document.createElement('option');
         opt.value = key;
         opt.textContent = name;
-        if (key === currentSettings.currentEvent) opt.selected = true;
         eventSelect.appendChild(opt);
       });
-      if (currentSettings.currentEvent === 'all') eventSelect.value = 'all';
+
+      eventSelect.value = selectedVal || 'all';
     }
 
     function updateQuickNotes() {
       const noteCounts = {};
       Object.values(rawDataCache).forEach(item => {
         const note = (item.note || '').trim();
-        // 清算メモはクイックノートのカウントから除外
-        if (note && note !== 'メモなし' && !note.startsWith('清算（')) {
+        if (note && note !== 'メモなし' && !item.isSettlement) {
           noteCounts[note] = (noteCounts[note] || 0) + 1;
         }
       });
@@ -174,16 +181,22 @@
       });
     }
 
-    // 期間の判定用関数（年・月・すべて）
     function isMatchPeriod(itemDate, selectedPeriod) {
       if (selectedPeriod === 'all') return true;
       if (selectedPeriod.length === 4) {
-        // 年指定 (例: "2026")
         return itemDate.substring(0, 4) === selectedPeriod;
       } else {
-        // 月指定 (例: "2026-08")
         return itemDate.substring(0, 7) === selectedPeriod;
       }
+    }
+
+    function isMatchEvent(item, selectedEvent) {
+      if (selectedEvent === 'all') return true;
+      if (selectedEvent === 'unsettled') return !item.isSettlement;
+      if (selectedEvent === 'settled') return !!item.isSettlement;
+      
+      const itemEvent = item.eventId || 'default';
+      return itemEvent === selectedEvent;
     }
 
     function renderApp() {
@@ -202,7 +215,6 @@
       const entries = Object.entries(rawDataCache).reverse();
 
       entries.forEach(([id, item]) => {
-        const itemEvent = item.eventId || 'default';
         const payerName = item.payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
 
         if (item.deleteRequested) {
@@ -225,7 +237,7 @@
           }
         }
 
-        if (selectedEvent === 'all' || itemEvent === selectedEvent) {
+        if (isMatchEvent(item, selectedEvent)) {
           if (isMatchPeriod(item.date || '', selectedPeriod)) {
             if (!item.deleteRequested) {
               if (item.payer === 'A') totalA += item.amount;
@@ -237,7 +249,7 @@
             const li = document.createElement('li');
             li.innerHTML = `
               <div class="item-header">
-                <span>📅 ${item.date || '日付未設定'}</span>
+                <span>📅 ${item.date || '日付未設定'} ${item.isSettlement ? '<span class="settled-badge">🧹 清算済</span>' : ''}</span>
                 <span><strong>${payerName}</strong></span>
               </div>
               <div class="item-body">
@@ -280,16 +292,14 @@
         currentSettlementData = null;
       } else {
         const settleAmount = Math.abs(diff) / 2;
-        const totalAmountToLog = Math.abs(diff); // 履歴に残す総額
+        const totalAmountToLog = Math.abs(diff);
         let payer, payerName, receiverName;
 
         if (diff > 0) {
-          // Aが多く払っている = BがAへ払う
           payer = 'B';
           payerName = nameB;
           receiverName = nameA;
         } else {
-          // Bが多く払っている = AがBへ払う
           payer = 'A';
           payerName = nameA;
           receiverName = nameB;
@@ -297,7 +307,6 @@
 
         settlementEl.innerText = `${payerName} → ${receiverName} へ ¥${settleAmount.toLocaleString()} 支払う`;
         
-        // 清算ボタンの表示・設定
         btnSettle.style.display = 'block';
         btnSettle.innerText = `🧹 ${payerName} が清算 (¥${settleAmount.toLocaleString()}) を記録する`;
         currentSettlementData = {
@@ -315,8 +324,7 @@
       const months = new Set();
 
       entries.forEach(([id, item]) => {
-        const itemEvent = item.eventId || 'default';
-        if ((selectedEvent === 'all' || itemEvent === selectedEvent) && item.date && item.date.length >= 7) {
+        if (isMatchEvent(item, selectedEvent) && item.date && item.date.length >= 7) {
           years.add(item.date.substring(0, 4));
           months.add(item.date.substring(0, 7));
         }
@@ -383,7 +391,7 @@
       const date = document.getElementById('date').value;
       
       let eventId = document.getElementById('event-filter').value;
-      if (eventId === 'all') eventId = 'default';
+      if (eventId === 'all' || eventId === 'unsettled' || eventId === 'settled') eventId = 'default';
 
       const autoSwitch = document.getElementById('auto-switch-tab').checked;
 
@@ -396,7 +404,8 @@
         date: date,
         eventId: eventId,
         timestamp: Date.now(),
-        deleteRequested: false
+        deleteRequested: false,
+        isSettlement: false
       });
 
       document.getElementById('amount').value = '';
@@ -418,7 +427,7 @@
       if (confirm(`${payerName}さんが ¥${displayAmount.toLocaleString()} を支払い、貸し借りを清算（リセット）します。よろしいですか？`)) {
         
         let eventId = document.getElementById('event-filter').value;
-        if (eventId === 'all') eventId = 'default';
+        if (eventId === 'all' || eventId === 'unsettled' || eventId === 'settled') eventId = 'default';
 
         push(ref(db, `rooms/${roomId}/items`), {
           payer: payer,
@@ -427,7 +436,8 @@
           date: today,
           eventId: eventId,
           timestamp: Date.now(),
-          deleteRequested: false
+          deleteRequested: false,
+          isSettlement: true
         });
 
         alert('清算を記録しました！');
@@ -533,6 +543,8 @@
         <label for="event-filter">表示中のイベント/テーマ</label>
         <select id="event-filter" onchange="onFilterChange()">
           <option value="all">すべてのイベント/テーマ</option>
+          <option value="unsettled">未清算の項目のみ</option>
+          <option value="settled">清算済の項目のみ</option>
         </select>
       </div>
 
