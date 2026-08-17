@@ -49,6 +49,9 @@
     .checkbox-label { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-weight: normal; font-size: 0.85em; cursor: pointer; }
     .checkbox-label input { width: auto; margin-top: 0; }
     .my-role-select { background: #e2e3e5; padding: 10px; border-radius: 8px; margin-bottom: 12px; font-size: 0.85em; }
+
+    .btn-settle { background: #28a745; color: white; margin-top: 16px; padding: 10px; font-size: 0.95em; border-radius: 8px; display: none; }
+    .btn-settle:hover { background: #218838; }
   </style>
 
   <!-- Firebase SDK -->
@@ -87,6 +90,7 @@
     let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all" };
     let eventsList = { "default": "日常の貸し借り" };
     let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
+    let currentSettlementData = null; // 清算用データを保持
 
     onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
       const data = snapshot.val();
@@ -147,7 +151,8 @@
       const noteCounts = {};
       Object.values(rawDataCache).forEach(item => {
         const note = (item.note || '').trim();
-        if (note && note !== 'メモなし') {
+        // 清算メモはクイックノートのカウントから除外
+        if (note && note !== 'メモなし' && !note.startsWith('清算（')) {
           noteCounts[note] = (noteCounts[note] || 0) + 1;
         }
       });
@@ -169,8 +174,20 @@
       });
     }
 
+    // 期間の判定用関数（年・月・すべて）
+    function isMatchPeriod(itemDate, selectedPeriod) {
+      if (selectedPeriod === 'all') return true;
+      if (selectedPeriod.length === 4) {
+        // 年指定 (例: "2026")
+        return itemDate.substring(0, 4) === selectedPeriod;
+      } else {
+        // 月指定 (例: "2026-08")
+        return itemDate.substring(0, 7) === selectedPeriod;
+      }
+    }
+
     function renderApp() {
-      const selectedMonth = document.getElementById('month-filter').value;
+      const selectedPeriod = document.getElementById('month-filter').value;
       const selectedEvent = document.getElementById('event-filter').value;
 
       let totalA = 0;
@@ -185,7 +202,6 @@
       const entries = Object.entries(rawDataCache).reverse();
 
       entries.forEach(([id, item]) => {
-        const itemMonth = item.date ? item.date.substring(0, 7) : '';
         const itemEvent = item.eventId || 'default';
         const payerName = item.payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
 
@@ -210,7 +226,7 @@
         }
 
         if (selectedEvent === 'all' || itemEvent === selectedEvent) {
-          if (selectedMonth === 'all' || selectedMonth === itemMonth) {
+          if (isMatchPeriod(item.date || '', selectedPeriod)) {
             if (!item.deleteRequested) {
               if (item.payer === 'A') totalA += item.amount;
               if (item.payer === 'B') totalB += item.amount;
@@ -240,13 +256,9 @@
       });
 
       const approvalContainer = document.getElementById('approval-container');
-      if (pendingCount > 0) {
-        approvalContainer.style.display = 'block';
-      } else {
-        approvalContainer.style.display = 'none';
-      }
+      approvalContainer.style.display = pendingCount > 0 ? 'block' : 'none';
 
-      updateMonthOptions(entries, selectedEvent, selectedMonth);
+      updatePeriodOptions(entries, selectedEvent, selectedPeriod);
 
       const nameA = currentSettings.nameA;
       const nameB = currentSettings.nameB;
@@ -260,28 +272,66 @@
 
       const diff = totalA - totalB;
       const settlementEl = document.getElementById('settlement');
+      const btnSettle = document.getElementById('btn-settle');
 
       if (diff === 0) {
         settlementEl.innerText = "貸し借りは現在ありません 👏";
-      } else if (diff > 0) {
-        settlementEl.innerText = `${nameB} → ${nameA} へ ¥${(diff / 2).toLocaleString()} 支払う`;
+        btnSettle.style.display = 'none';
+        currentSettlementData = null;
       } else {
-        settlementEl.innerText = `${nameA} → ${nameB} へ ¥${(Math.abs(diff) / 2).toLocaleString()} 支払う`;
+        const settleAmount = Math.abs(diff) / 2;
+        const totalAmountToLog = Math.abs(diff); // 履歴に残す総額
+        let payer, payerName, receiverName;
+
+        if (diff > 0) {
+          // Aが多く払っている = BがAへ払う
+          payer = 'B';
+          payerName = nameB;
+          receiverName = nameA;
+        } else {
+          // Bが多く払っている = AがBへ払う
+          payer = 'A';
+          payerName = nameA;
+          receiverName = nameB;
+        }
+
+        settlementEl.innerText = `${payerName} → ${receiverName} へ ¥${settleAmount.toLocaleString()} 支払う`;
+        
+        // 清算ボタンの表示・設定
+        btnSettle.style.display = 'block';
+        btnSettle.innerText = `🧹 ${payerName} が清算 (¥${settleAmount.toLocaleString()}) を記録する`;
+        currentSettlementData = {
+          payer: payer,
+          totalAmount: totalAmountToLog,
+          displayAmount: settleAmount,
+          payerName: payerName
+        };
       }
     }
 
-    function updateMonthOptions(entries, selectedEvent, currentSelected) {
+    function updatePeriodOptions(entries, selectedEvent, currentSelected) {
       const filterSelect = document.getElementById('month-filter');
+      const years = new Set();
       const months = new Set();
 
       entries.forEach(([id, item]) => {
         const itemEvent = item.eventId || 'default';
         if ((selectedEvent === 'all' || itemEvent === selectedEvent) && item.date && item.date.length >= 7) {
+          years.add(item.date.substring(0, 4));
           months.add(item.date.substring(0, 7));
         }
       });
 
-      filterSelect.innerHTML = '<option value="all">すべての月</option>';
+      filterSelect.innerHTML = '<option value="all">すべての期間</option>';
+      
+      Array.from(years).sort().reverse().forEach(y => {
+        const opt = document.createElement('option');
+        opt.value = y;
+        opt.textContent = `${y}年（年間すべて）`;
+        if (y === currentSelected) opt.selected = true;
+        filterSelect.appendChild(opt);
+      });
+
       Array.from(months).sort().reverse().forEach(m => {
         const opt = document.createElement('option');
         opt.value = m;
@@ -289,6 +339,7 @@
         if (m === currentSelected) opt.selected = true;
         filterSelect.appendChild(opt);
       });
+
       if (currentSelected === 'all') filterSelect.value = 'all';
     }
 
@@ -359,6 +410,30 @@
       }
     };
 
+    window.executeSettlement = function() {
+      if (!currentSettlementData) return;
+      
+      const { payer, totalAmount, displayAmount, payerName } = currentSettlementData;
+      
+      if (confirm(`${payerName}さんが ¥${displayAmount.toLocaleString()} を支払い、貸し借りを清算（リセット）します。よろしいですか？`)) {
+        
+        let eventId = document.getElementById('event-filter').value;
+        if (eventId === 'all') eventId = 'default';
+
+        push(ref(db, `rooms/${roomId}/items`), {
+          payer: payer,
+          amount: totalAmount,
+          note: `清算（¥${displayAmount.toLocaleString()} 支払い）`,
+          date: today,
+          eventId: eventId,
+          timestamp: Date.now(),
+          deleteRequested: false
+        });
+
+        alert('清算を記録しました！');
+      }
+    };
+
     window.requestDelete = function(itemId) {
       if (confirm('相手に削除申請を送りますか？（相手が許可すると完全に削除されます）')) {
         update(ref(db, `rooms/${roomId}/items/${itemId}`), {
@@ -407,6 +482,7 @@
 
   <div class="card">
     <div id="settlement" class="result">読み込み中...</div>
+    <button id="btn-settle" class="btn-settle" onclick="executeSettlement()"></button>
   </div>
 
   <div class="tab-menu">
@@ -461,9 +537,9 @@
       </div>
 
       <div class="filter-group">
-        <label for="month-filter">表示する月</label>
+        <label for="month-filter">表示する期間（年・月）</label>
         <select id="month-filter" onchange="onFilterChange()">
-          <option value="all">すべての月</option>
+          <option value="all">すべての期間</option>
         </select>
       </div>
 
