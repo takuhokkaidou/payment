@@ -514,7 +514,7 @@
       sendToGeminiAPI(base64Data, mimeType);
     };
 
-    // --- Gemini API 共通送信処理 ---
+    // --- Gemini API 送信処理 (AQ... キー / x-goog-api-key ヘッダー対応) ---
     async function sendToGeminiAPI(base64Data, mimeType) {
       const apiKey = currentSettings.geminiApiKey.trim();
       const statusEl = document.getElementById('ai-status');
@@ -528,20 +528,16 @@
       statusEl.style.display = 'block';
       statusEl.innerText = '🤖 AIがレシートを解析中...';
 
-      // 安定版の gemini-1.5-flash モデルを使用
-      let apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`;
-      const headers = { 'Content-Type': 'application/json' };
-
-      if (apiKey.startsWith('AIzaSy')) {
-        apiUrl += `?key=${apiKey}`;
-      } else {
-        headers['x-goog-api-key'] = apiKey;
-      }
+      // エンドポイント（x-goog-api-key ヘッダーで認証を行うためURLへのキー付与は不要）
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`;
 
       try {
         const response = await fetch(apiUrl, {
           method: 'POST',
-          headers: headers,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey // AQ... 形式のキーはヘッダーで指定
+          },
           body: JSON.stringify({
             contents: [{
               parts: [
@@ -769,7 +765,7 @@
       <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
 
       <label>🤖 Gemini APIキー（レシート自動入力用）</label>
-      <input type="password" id="gemini-key-input" placeholder="AQ.Ab8RN6... または AIzaSy...">
+      <input type="password" id="gemini-key-input" placeholder="AQ... から始まるキーを入力">
       <p style="font-size: 0.75em; color: #666; margin-top: 4px;">
         APIキーを入力して保存すると、レシート写真の読み込みが有効化されます。
       </p>
@@ -778,7 +774,7 @@
 
       <!-- システム更新日時 -->
       <div class="version-info">
-        ⚙️ システム情報 (最終更新: 2026-08-23 23:36)
+        ⚙️ システム情報 (最終更新: AQキー完全対応版)
       </div>
     </div>
 
