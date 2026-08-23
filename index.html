@@ -68,6 +68,9 @@
     #camera-video { width: 100%; border-radius: 8px; background: #000; max-height: 300px; object-fit: cover; }
     .cam-action-btns { display: flex; gap: 8px; margin-top: 6px; }
     .cam-action-btns button { margin-top: 0; font-size: 0.85em; padding: 8px; }
+
+    /* バージョン情報表示スタイル */
+    .version-info { text-align: center; font-size: 0.8em; color: #6c757d; margin-top: 16px; padding-top: 8px; border-top: 1px dashed #ced4da; }
   </style>
 
   <!-- Firebase SDK -->
@@ -745,6 +748,11 @@
       </p>
 
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
+
+      <!-- システム更新日時 -->
+      <div class="version-info">
+        ⚙️ システム情報 (最終更新: 2026-08-23 23:25)
+      </div>
     </div>
 
     <div class="card">
