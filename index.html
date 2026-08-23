@@ -54,6 +54,11 @@
 
     .btn-settle { background: #28a745; color: white; margin-top: 16px; padding: 10px; font-size: 0.95em; border-radius: 8px; display: none; }
     .btn-settle:hover { background: #218838; }
+
+    /* AI解析用スタイル */
+    .ai-box { background: #eef2ff; border: 1px dashed #6366f1; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
+    .ai-box label { color: #4338ca; margin-top: 0; }
+    .loading-status { font-size: 0.85em; color: #6366f1; font-weight: bold; display: none; margin-top: 6px; }
   </style>
 
   <!-- Firebase SDK -->
@@ -89,7 +94,7 @@
     document.getElementById('date').value = today;
 
     let rawDataCache = {};
-    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all" };
+    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all", geminiApiKey: "" };
     let eventsList = { "default": "日常の貸し借り" };
     let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
     let currentSettlementData = null;
@@ -98,6 +103,9 @@
       const data = snapshot.val();
       if (data) currentSettings = { ...currentSettings, ...data };
       updateNamesUI();
+      if (currentSettings.geminiApiKey) {
+        document.getElementById('gemini-key-input').value = currentSettings.geminiApiKey;
+      }
     });
 
     onValue(ref(db, `rooms/${roomId}/events`), (snapshot) => {
@@ -377,11 +385,14 @@
     window.saveNames = function() {
       const nameA = document.getElementById('name-a-input').value.trim() || 'Aさん';
       const nameB = document.getElementById('name-b-input').value.trim() || 'Bさん';
+      const apiKey = document.getElementById('gemini-key-input').value.trim();
 
       currentSettings.nameA = nameA;
       currentSettings.nameB = nameB;
+      currentSettings.geminiApiKey = apiKey;
+
       set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-      alert('名前の設定を保存しました！');
+      alert('設定を保存しました！');
     };
 
     window.addEntry = function() {
@@ -411,11 +422,67 @@
       document.getElementById('amount').value = '';
       document.getElementById('note').value = '';
       document.getElementById('date').value = today;
+      document.getElementById('receipt-file').value = '';
       
       if (autoSwitch) {
         switchTab('history');
       } else {
         alert('追加しました！');
+      }
+    };
+
+    // --- Gemini AI によるレシート解析処理 ---
+    window.processReceiptAI = async function() {
+      const fileInput = document.getElementById('receipt-file');
+      const file = fileInput.files[0];
+      const statusEl = document.getElementById('ai-status');
+
+      if (!file) return;
+
+      const apiKey = currentSettings.geminiApiKey;
+      if (!apiKey) {
+        alert('レシート自動入力を使用するには、設定タブでGemini APIキーを設定してください。');
+        fileInput.value = '';
+        return;
+      }
+
+      statusEl.style.display = 'block';
+      statusEl.innerText = '🤖 AIがレシートを解析中...';
+
+      try {
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(',')[1]);
+          reader.onerror = error => reject(error);
+          reader.readAsDataURL(file);
+        });
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: "このレシート画像から「合計金額（数値のみ）」「日付（YYYY-MM-DD形式）」「店舗名または主な品目（10文字以内の短いメモ）」を抽出し、以下のJSONフォーマットのみで返してください。不明な場合は日付は今日、店舗名は『買い物』にしてください。例: {\"amount\": 1200, \"date\": \"2026-05-20\", \"note\": \"イオン\"}" },
+                { inline_data: { mime_type: file.type, data: base64Base64 } }
+              ]
+            }],
+            generationConfig: { response_mime_type: "application/json" }
+          })
+        });
+
+        const resData = await response.json();
+        const textResult = resData.candidates[0].content.parts[0].text;
+        const parsed = JSON.parse(textResult);
+
+        if (parsed.amount) document.getElementById('amount').value = parsed.amount;
+        if (parsed.date) document.getElementById('date').value = parsed.date;
+        if (parsed.note) document.getElementById('note').value = parsed.note;
+
+        statusEl.innerText = '✅ 自動入力完了！確認して修正してください。';
+      } catch (err) {
+        console.error("AI Analysis Error:", err);
+        statusEl.innerText = '❌ 解析に失敗しました。手動で入力してください。';
       }
     };
 
@@ -504,6 +571,13 @@
   <div id="tab-input" class="tab-content active">
     <div class="card">
       <h3>立て替えを入力</h3>
+
+      <!-- AIレシート解析領域 -->
+      <div class="ai-box">
+        <label>📷 レシート写真からAI自動入力</label>
+        <input type="file" id="receipt-file" accept="image/*" onchange="processReceiptAI()">
+        <div id="ai-status" class="loading-status"></div>
+      </div>
       
       <label>日付</label>
       <input type="date" id="date">
@@ -584,7 +658,16 @@
           <input type="text" id="name-b-input" value="Bさん">
         </div>
       </div>
-      <button onclick="saveNames()" style="background:#28a745;">名前を保存</button>
+
+      <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
+
+      <label>🤖 Gemini APIキー（レシート自動入力用）</label>
+      <input type="password" id="gemini-key-input" placeholder="AIzaSy...">
+      <p style="font-size: 0.75em; color: #666; margin-top: 4px;">
+        Google AI Studio等で取得した無料のGemini APIキーを入力して保存すると、レシート写真の読み込みが有効化されます。
+      </p>
+
+      <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
     </div>
 
     <div class="card">
