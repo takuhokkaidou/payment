@@ -56,9 +56,12 @@
     .btn-settle:hover { background: #218838; }
 
     /* AI解析用スタイル */
-    .ai-box { background: #eef2ff; border: 1px dashed #6366f1; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
+    .ai-box { background: #eef2ff; border: 1px dashed #6366f1; padding: 12px; border-radius: 8px; margin-top: 20px; }
     .ai-box label { color: #4338ca; margin-top: 0; }
-    .loading-status { font-size: 0.85em; color: #6366f1; font-weight: bold; display: none; margin-top: 6px; }
+    .ai-btn-group { display: flex; gap: 8px; margin-top: 8px; }
+    .ai-btn-group button { font-size: 0.85em; padding: 8px; margin-top: 0; background: #6366f1; }
+    .ai-btn-group button:hover { background: #4f46e5; }
+    .loading-status { font-size: 0.85em; color: #6366f1; font-weight: bold; display: none; margin-top: 8px; text-align: center; }
   </style>
 
   <!-- Firebase SDK -->
@@ -422,7 +425,9 @@
       document.getElementById('amount').value = '';
       document.getElementById('note').value = '';
       document.getElementById('date').value = today;
+      document.getElementById('receipt-camera').value = '';
       document.getElementById('receipt-file').value = '';
+      document.getElementById('ai-status').style.display = 'none';
       
       if (autoSwitch) {
         switchTab('history');
@@ -432,8 +437,8 @@
     };
 
     // --- Gemini AI によるレシート解析処理 ---
-    window.processReceiptAI = async function() {
-      const fileInput = document.getElementById('receipt-file');
+    window.processReceiptAI = async function(fileInputId) {
+      const fileInput = document.getElementById(fileInputId);
       const file = fileInput.files[0];
       const statusEl = document.getElementById('ai-status');
 
@@ -464,7 +469,7 @@
             contents: [{
               parts: [
                 { text: "このレシート画像から「合計金額（数値のみ）」「日付（YYYY-MM-DD形式）」「店舗名または主な品目（10文字以内の短いメモ）」を抽出し、以下のJSONフォーマットのみで返してください。不明な場合は日付は今日、店舗名は『買い物』にしてください。例: {\"amount\": 1200, \"date\": \"2026-05-20\", \"note\": \"イオン\"}" },
-                { inline_data: { mime_type: file.type, data: base64Base64 } }
+                { inline_data: { mime_type: file.type, data: base64Data } }
               ]
             }],
             generationConfig: { response_mime_type: "application/json" }
@@ -479,7 +484,7 @@
         if (parsed.date) document.getElementById('date').value = parsed.date;
         if (parsed.note) document.getElementById('note').value = parsed.note;
 
-        statusEl.innerText = '✅ 自動入力完了！確認して修正してください。';
+        statusEl.innerText = '✅ 自動入力完了！上の項目を確認してください。';
       } catch (err) {
         console.error("AI Analysis Error:", err);
         statusEl.innerText = '❌ 解析に失敗しました。手動で入力してください。';
@@ -572,13 +577,6 @@
     <div class="card">
       <h3>立て替えを入力</h3>
 
-      <!-- AIレシート解析領域 -->
-      <div class="ai-box">
-        <label>📷 レシート写真からAI自動入力</label>
-        <input type="file" id="receipt-file" accept="image/*" onchange="processReceiptAI()">
-        <div id="ai-status" class="loading-status"></div>
-      </div>
-      
       <label>日付</label>
       <input type="date" id="date">
 
@@ -601,6 +599,21 @@
       </label>
 
       <button onclick="addEntry()">追加する</button>
+
+      <!-- AIレシート解析領域（追加ボタンの下に移動） -->
+      <div class="ai-box">
+        <label>🧾 レシートから自動入力</label>
+        
+        <!-- 非表示のinput -->
+        <input type="file" id="receipt-camera" accept="image/*" capture="environment" onchange="processReceiptAI('receipt-camera')" style="display:none;">
+        <input type="file" id="receipt-file" accept="image/*" onchange="processReceiptAI('receipt-file')" style="display:none;">
+        
+        <div class="ai-btn-group">
+          <button type="button" onclick="document.getElementById('receipt-camera').click()">📷 カメラで撮影</button>
+          <button type="button" onclick="document.getElementById('receipt-file').click()">📁 画像を選択</button>
+        </div>
+        <div id="ai-status" class="loading-status"></div>
+      </div>
     </div>
   </div>
 
