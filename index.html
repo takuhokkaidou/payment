@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（JSON通信版）</title>
+  <title>ふたりの貸し借りメモ（イベント選択対応・JSON通信版）</title>
   <style>
     body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 16px; background: #f4f6f8; color: #333; }
     .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
@@ -145,23 +145,40 @@
     }
 
     function updateEventsUI() {
-      const eventSelect = document.getElementById('event-filter');
+      // 履歴・絞り込み側のセレクトボックス
+      const eventFilter = document.getElementById('event-filter');
       const selectedVal = currentSettings.currentEvent;
       
-      eventSelect.innerHTML = `
+      eventFilter.innerHTML = `
         <option value="all">すべてのイベント/テーマ</option>
         <option value="unsettled">未清算の項目のみ</option>
         <option value="settled">清算済の項目のみ</option>
       `;
-      
+
+      // 入力側のセレクトボックス
+      const entryEventSelect = document.getElementById('entry-event');
+      entryEventSelect.innerHTML = '';
+
       Object.entries(eventsList).forEach(([key, name]) => {
-        const opt = document.createElement('option');
-        opt.value = key;
-        opt.textContent = name;
-        eventSelect.appendChild(opt);
+        // 絞り込み用
+        const opt1 = document.createElement('option');
+        opt1.value = key;
+        opt1.textContent = name;
+        eventFilter.appendChild(opt1);
+
+        // 入力用
+        const opt2 = document.createElement('option');
+        opt2.value = key;
+        opt2.textContent = name;
+        entryEventSelect.appendChild(opt2);
       });
 
-      eventSelect.value = selectedVal || 'all';
+      eventFilter.value = selectedVal || 'all';
+      
+      // もし現在選択中のイベントがあれば入力側にも反映
+      if (selectedVal && selectedVal !== 'all' && selectedVal !== 'unsettled' && selectedVal !== 'settled') {
+        entryEventSelect.value = selectedVal;
+      }
     }
 
     function updateQuickNotes() {
@@ -258,11 +275,12 @@
             }
 
             const isMyRequest = item.deleteRequestedBy === currentUserRole;
+            const eventName = eventsList[item.eventId] || '日常の貸し借り';
 
             const li = document.createElement('li');
             li.innerHTML = `
               <div class="item-header">
-                <span>📅 ${item.date || '日付未設定'} ${item.isSettlement ? '<span class="settled-badge">🧹 清算済</span>' : ''}</span>
+                <span>📅 ${item.date || '日付未設定'} [${escapeHtml(eventName)}] ${item.isSettlement ? '<span class="settled-badge">🧹 清算済</span>' : ''}</span>
                 <span><strong>${payerName}</strong></span>
               </div>
               <div class="item-body">
@@ -392,6 +410,7 @@
       set(ref(db, `rooms/${roomId}/settings`), currentSettings);
 
       nameInput.value = '';
+      alert(`イベント「${eventName}」を作成しました！`);
     };
 
     window.saveNames = function() {
@@ -413,8 +432,11 @@
       const purchaseContent = document.getElementById('purchase-content').value.trim();
       const date = document.getElementById('date').value;
       const receiptFile = document.getElementById('receipt-file').files[0];
-      let eventId = document.getElementById('event-filter').value;
-      if (eventId === 'all' || eventId === 'unsettled' || eventId === 'settled') eventId = 'default';
+      
+      // 入力画面で選択されたイベントIDを取得
+      let eventId = document.getElementById('entry-event').value;
+      if (!eventId) eventId = 'default';
+
       const autoSwitch = document.getElementById('auto-switch-tab').checked;
       if (!amount || amount < 0) return alert('金額を正しく入力してください');
 
@@ -453,7 +475,6 @@
       }
     };
 
-    // --- JSON直接通信によるバックグラウンドアップロード ---
     async function uploadReceiptInBackground(itemId, receiptFile, date, purchasePlace) {
       try {
         const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
@@ -539,11 +560,9 @@
       });
     }
 
-    // fetch APIによるJSON直接通信関数
     async function uploadReceiptViaFetch(url, payload) {
       const response = await fetch(url, {
         method: 'POST',
-        // GASへのPOST時はCORSプリフライトを避けるためtext/plain等で送るか、通常のリクエストとして送信
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload)
       });
@@ -561,8 +580,7 @@
       
       if (confirm(`${payerName}さんが ¥${displayAmount.toLocaleString()} を支払い、貸し借りを清算（リセット）します。よろしいですか？`)) {
         
-        let eventId = document.getElementById('event-filter').value;
-        if (eventId === 'all' || eventId === 'unsettled' || eventId === 'settled') eventId = 'default';
+        let eventId = document.getElementById('entry-event').value || 'default';
 
         push(ref(db, `rooms/${roomId}/items`), {
           payer: payer,
@@ -641,6 +659,11 @@
     <div class="card">
       <h3>立て替えを入力</h3>
 
+      <label>対象のイベント / テーマ</label>
+      <select id="entry-event">
+        <option value="default">日常の貸し借り</option>
+      </select>
+
       <label>日付</label>
       <input type="date" id="date">
 
@@ -663,7 +686,7 @@
       <div class="receipt-box">
         <label for="receipt-file">レシート画像（任意）</label>
         <input type="file" id="receipt-file" accept="image/*" capture="environment">
-        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します（JSON直接通信版）。</div>
+        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します。</div>
       </div>
 
       <label class="checkbox-label">
@@ -743,7 +766,7 @@
 
       <!-- システム更新日時 -->
       <div class="version-info">
-        ⚙️ システム情報（JSON返信型・fetch直接通信版）
+        ⚙️ システム情報（入力時イベント選択対応版）
       </div>
     </div>
 
