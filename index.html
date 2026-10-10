@@ -471,12 +471,11 @@
             receiptUrl: uploaded.url
           });
         } else {
-          // 合言葉違いやエラーの詳細を通知
-          alert(`⚠️ データの追加は完了しましたが、レシート画像の保存に失敗しました:\n${uploaded.error || '合言葉やURLを確認してください'}`);
+          alert(`⚠️ レシートの紐づけに失敗しました:\n${uploaded.error || '合言葉やURLを確認してください'}`);
         }
       } catch (e) {
         console.warn('レシート画像のバックグラウンドアップロードに失敗しました:', e);
-        alert('⚠️ レシート画像のアップロード中にエラーが発生しました（データ自体は履歴に保存されています）。');
+        alert(`⚠️ レシートの紐づけ中にエラーが発生しました: ${e.message || e}`);
       }
     }
 
@@ -546,21 +545,52 @@
         const iframe = document.createElement('iframe');
         iframe.name = `receipt_upload_${nonce}`;
         iframe.style.display = 'none';
+        
         const form = document.createElement('form');
-        form.method = 'POST'; form.action = url; form.target = iframe.name;
+        form.method = 'POST'; 
+        form.action = url; 
+        form.target = iframe.name;
         form.style.display = 'none';
+        
         const fields = { ...payload, nonce };
         Object.entries(fields).forEach(([name, value]) => {
-          const input = document.createElement('input'); input.type = 'hidden'; input.name = name; input.value = String(value ?? ''); form.appendChild(input);
+          const input = document.createElement('input'); 
+          input.type = 'hidden'; 
+          input.name = name; 
+          input.value = String(value ?? ''); 
+          form.appendChild(input);
         });
-        const cleanup = () => { window.removeEventListener('message', onMessage); clearTimeout(timer); form.remove(); iframe.remove(); };
+
+        let isCompleted = false;
+        const cleanup = () => {
+          if (isCompleted) return;
+          isCompleted = true;
+          window.removeEventListener('message', onMessage);
+          clearTimeout(timer);
+          form.remove();
+          iframe.remove();
+        };
+
         const onMessage = event => {
           const d = event.data;
+          // セキュリティ保護のためオリジンチェックを緩くするか同等確認
           if (!d || d.type !== 'receipt-upload-result' || d.nonce !== nonce) return;
-          cleanup(); resolve(d);
+          cleanup();
+          if (d.ok) {
+            resolve(d);
+          } else {
+            reject(new Error(d.error || 'サーバー側でエラーが発生しました'));
+          }
         };
+
         window.addEventListener('message', onMessage);
-        const timer = setTimeout(() => { cleanup(); reject(new Error('保存先から応答がありません。合言葉やウェブアプリURLを確認してください。')); }, 90000);
+        
+        // タイムアウトを120秒に延長
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error('保存先からの応答がタイムアウトしました。Google Apps Scriptの「アクセスできるユーザー：全員」の公開設定が正しく行われているか確認してください。'));
+        }, 120000);
+
         document.body.append(iframe, form);
         form.submit();
       });
@@ -675,7 +705,7 @@
       <div class="receipt-box">
         <label for="receipt-file">レシート画像（任意）</label>
         <input type="file" id="receipt-file" accept="image/*" capture="environment">
-        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します。合言葉やURLが間違っている場合は、アップロード後にエラーメッセージでお知らせします。</div>
+        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します。</div>
       </div>
 
       <label class="checkbox-label">
@@ -755,7 +785,7 @@
 
       <!-- システム更新日時 -->
       <div class="version-info">
-        ⚙️ システム情報（合言葉エラー通知対応版）
+        ⚙️ システム情報（通信・応答判定強化版）
       </div>
     </div>
 
