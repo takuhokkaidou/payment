@@ -418,7 +418,7 @@
 
       const addButton = document.getElementById('add-entry-button');
       addButton.disabled = true;
-      addButton.textContent = receiptFile ? 'レシートを保存中…' : '追加中…';
+
       try {
         let receiptUrl = '';
         if (receiptFile) {
@@ -427,7 +427,13 @@
           if (!uploadUrl) throw new Error('先に設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
           if (!pin) throw new Error('レシート保存用の合言葉を入力してください。');
           if (!receiptFile.type.startsWith('image/')) throw new Error('レシートは画像ファイルを選んでください。');
+
+          // 1. 画像圧縮・リサイズ
+          addButton.textContent = '📸 レシート画像を軽量化中… (10%)';
           const compressed = await compressReceiptImage(receiptFile);
+
+          // 2. アップロード送信
+          addButton.textContent = '📤 ドライブへ送信中… (50%)';
           const uploaded = await uploadReceiptViaForm(uploadUrl, {
             action: 'upload', roomId, pin, fileName: `${date}_${purchasePlace}_${Date.now()}.jpg`,
             mimeType: 'image/jpeg', data: compressed.split(',')[1]
@@ -436,6 +442,7 @@
           receiptUrl = uploaded.url;
         }
 
+        addButton.textContent = '💾 データを保存中… (90%)';
         const itemRef = push(ref(db, `rooms/${roomId}/items`));
         await set(itemRef, {
           payer, amount, note: purchasePlace, purchasePlace, purchaseContent, receiptUrl,
@@ -467,15 +474,16 @@
           const img = new Image();
           img.onerror = () => reject(new Error('画像を開けませんでした。'));
           img.onload = () => {
-            const maxSide = 1400;
+            // 金額が判別できる最低限の解像度（長辺を最大1000pxに縮小）
+            const maxSide = 1000;
             const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
             const canvas = document.createElement('canvas');
             canvas.width = Math.max(1, Math.round(img.width * scale));
             canvas.height = Math.max(1, Math.round(img.height * scale));
             canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-            let result = canvas.toDataURL('image/jpeg', 0.68);
-            if (result.length > 1_250_000) result = canvas.toDataURL('image/jpeg', 0.5);
-            if (result.length > 1_250_000) return reject(new Error('画像が大きすぎます。解像度を下げて撮影するか、別の画像を選んでください。'));
+            // 画質を0.5（50%）に落としてファイルサイズを大幅に削減
+            let result = canvas.toDataURL('image/jpeg', 0.5);
+            if (result.length > 500_000) result = canvas.toDataURL('image/jpeg', 0.4);
             resolve(result);
           };
           img.src = reader.result;
@@ -621,7 +629,7 @@
       <div class="receipt-box">
         <label for="receipt-file">レシート画像（任意）</label>
         <input type="file" id="receipt-file" accept="image/*" capture="environment">
-        <div class="receipt-help">画像を選ぶと、レシート専用Googleドライブに保存し、購入記録にリンクを紐づけます。画像は送信前に縮小します（最大約1.25MB）。AI読み取りは行いません。</div>
+        <div class="receipt-help">画像を選ぶと、レシート専用Googleドライブに保存し、購入記録にリンクを紐づけます。金額がしっかり読める最低限の画質（軽量）に自動縮小します。</div>
       </div>
 
       <label class="checkbox-label">
@@ -701,7 +709,7 @@
 
       <!-- システム更新日時 -->
       <div class="version-info">
-        ⚙️ システム情報（Googleドライブ・レシート画像試作版）
+        ⚙️ システム情報（進捗表示・軽量リサイズ対応版）
       </div>
     </div>
 
