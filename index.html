@@ -407,7 +407,6 @@
       alert('設定を保存しました。アップロード用の合言葉はこの端末にのみ保存しました。');
     };
 
-    // --- メインの追加処理（データを先に登録し、画像は後から裏でアップロード） ---
     window.addEntry = async function() {
       const payer = document.getElementById('payer').value;
       const amount = Number(document.getElementById('amount').value);
@@ -425,7 +424,6 @@
       addButton.textContent = 'データを保存中…';
 
       try {
-        // 1. レシート有無に関わらず、まずはFirebaseへデータを即座に保存する
         const itemRef = push(ref(db, `rooms/${roomId}/items`));
         const newItemId = itemRef.key;
         
@@ -434,7 +432,6 @@
           date, eventId, timestamp: Date.now(), deleteRequested: false, isSettlement: false
         });
 
-        // フォームをクリアして先に画面を切り替え
         document.getElementById('amount').value = '';
         document.getElementById('purchase-place').value = '';
         document.getElementById('purchase-content').value = '';
@@ -444,7 +441,6 @@
         if (autoSwitch) switchTab('history');
         else alert('追加しました！');
 
-        // 2. レシートファイルがある場合は、バックグラウンドでアップロードを試みる
         if (receiptFile) {
           uploadReceiptInBackground(newItemId, receiptFile, date, purchasePlace);
         }
@@ -458,12 +454,11 @@
       }
     };
 
-    // --- バックグラウンドアップロード処理 ---
     async function uploadReceiptInBackground(itemId, receiptFile, date, purchasePlace) {
       try {
         const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
         const pin = document.getElementById('receipt-pin-input').value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-        if (!uploadUrl || !pin) return; // 設定がなければスキップ（履歴にはデータが残っている）
+        if (!uploadUrl || !pin) return;
 
         const compressed = await compressReceiptImage(receiptFile);
         const uploaded = await uploadReceiptViaForm(uploadUrl, {
@@ -472,17 +467,19 @@
         });
 
         if (uploaded.ok && uploaded.url) {
-          // アップロード成功したら、該当項目の receiptUrl を更新
           await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
             receiptUrl: uploaded.url
           });
+        } else {
+          // 合言葉違いやエラーの詳細を通知
+          alert(`⚠️ データの追加は完了しましたが、レシート画像の保存に失敗しました:\n${uploaded.error || '合言葉やURLを確認してください'}`);
         }
       } catch (e) {
         console.warn('レシート画像のバックグラウンドアップロードに失敗しました:', e);
+        alert('⚠️ レシート画像のアップロード中にエラーが発生しました（データ自体は履歴に保存されています）。');
       }
     }
 
-    // --- 履歴から後からレシートを追加する処理 ---
     window.uploadLateReceipt = async function(itemId) {
       const fileInput = document.getElementById(`late-receipt-${itemId}`);
       const file = fileInput.files[0];
@@ -563,7 +560,7 @@
           cleanup(); resolve(d);
         };
         window.addEventListener('message', onMessage);
-        const timer = setTimeout(() => { cleanup(); reject(new Error('保存先から応答がありません。ウェブアプリURLと公開設定を確認してください。')); }, 90000);
+        const timer = setTimeout(() => { cleanup(); reject(new Error('保存先から応答がありません。合言葉やウェブアプリURLを確認してください。')); }, 90000);
         document.body.append(iframe, form);
         form.submit();
       });
@@ -678,7 +675,7 @@
       <div class="receipt-box">
         <label for="receipt-file">レシート画像（任意）</label>
         <input type="file" id="receipt-file" accept="image/*" capture="environment">
-        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信し自動で紐づけます。失敗してもデータはすぐに履歴に保存され、後から追加できます。</div>
+        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します。合言葉やURLが間違っている場合は、アップロード後にエラーメッセージでお知らせします。</div>
       </div>
 
       <label class="checkbox-label">
@@ -758,7 +755,7 @@
 
       <!-- システム更新日時 -->
       <div class="version-info">
-        ⚙️ システム情報（データ優先・後からレシート追加対応版）
+        ⚙️ システム情報（合言葉エラー通知対応版）
       </div>
     </div>
 
