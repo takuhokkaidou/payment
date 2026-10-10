@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（レシート画像対応 試作版）</title>
+  <title>ふたりの貸し借りメモ（JSON通信版）</title>
   <style>
     body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 16px; background: #f4f6f8; color: #333; }
     .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
@@ -60,7 +60,6 @@
     .receipt-link { display: inline-block; margin-top: 6px; color: #075985; font-weight: bold; }
     .receipt-upload-btn { background: #17a2b8; font-size: 0.8em; padding: 4px 8px; width: auto; margin-top: 4px; display: inline-block; }
 
-    /* バージョン情報表示スタイル */
     .version-info { text-align: center; font-size: 0.8em; color: #6c757d; margin-top: 16px; padding-top: 8px; border-top: 1px dashed #ced4da; }
   </style>
 
@@ -454,6 +453,7 @@
       }
     };
 
+    // --- JSON直接通信によるバックグラウンドアップロード ---
     async function uploadReceiptInBackground(itemId, receiptFile, date, purchasePlace) {
       try {
         const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
@@ -461,7 +461,7 @@
         if (!uploadUrl || !pin) return;
 
         const compressed = await compressReceiptImage(receiptFile);
-        const uploaded = await uploadReceiptViaForm(uploadUrl, {
+        const uploaded = await uploadReceiptViaFetch(uploadUrl, {
           action: 'upload', roomId, pin, fileName: `${date}_${purchasePlace}_${Date.now()}.jpg`,
           mimeType: 'image/jpeg', data: compressed.split(',')[1]
         });
@@ -499,7 +499,7 @@
       try {
         alert('レシートのアップロードを開始します。');
         const compressed = await compressReceiptImage(file);
-        const uploaded = await uploadReceiptViaForm(uploadUrl, {
+        const uploaded = await uploadReceiptViaFetch(uploadUrl, {
           action: 'upload', roomId, pin, fileName: `late_${Date.now()}.jpg`,
           mimeType: 'image/jpeg', data: compressed.split(',')[1]
         });
@@ -539,61 +539,19 @@
       });
     }
 
-    function uploadReceiptViaForm(url, payload) {
-      return new Promise((resolve, reject) => {
-        const nonce = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-        const iframe = document.createElement('iframe');
-        iframe.name = `receipt_upload_${nonce}`;
-        iframe.style.display = 'none';
-        
-        const form = document.createElement('form');
-        form.method = 'POST'; 
-        form.action = url; 
-        form.target = iframe.name;
-        form.style.display = 'none';
-        
-        const fields = { ...payload, nonce };
-        Object.entries(fields).forEach(([name, value]) => {
-          const input = document.createElement('input'); 
-          input.type = 'hidden'; 
-          input.name = name; 
-          input.value = String(value ?? ''); 
-          form.appendChild(input);
-        });
-
-        let isCompleted = false;
-        const cleanup = () => {
-          if (isCompleted) return;
-          isCompleted = true;
-          window.removeEventListener('message', onMessage);
-          clearTimeout(timer);
-          form.remove();
-          iframe.remove();
-        };
-
-        const onMessage = event => {
-          const d = event.data;
-          // セキュリティ保護のためオリジンチェックを緩くするか同等確認
-          if (!d || d.type !== 'receipt-upload-result' || d.nonce !== nonce) return;
-          cleanup();
-          if (d.ok) {
-            resolve(d);
-          } else {
-            reject(new Error(d.error || 'サーバー側でエラーが発生しました'));
-          }
-        };
-
-        window.addEventListener('message', onMessage);
-        
-        // タイムアウトを120秒に延長
-        const timer = setTimeout(() => {
-          cleanup();
-          reject(new Error('保存先からの応答がタイムアウトしました。Google Apps Scriptの「アクセスできるユーザー：全員」の公開設定が正しく行われているか確認してください。'));
-        }, 120000);
-
-        document.body.append(iframe, form);
-        form.submit();
+    // fetch APIによるJSON直接通信関数
+    async function uploadReceiptViaFetch(url, payload) {
+      const response = await fetch(url, {
+        method: 'POST',
+        // GASへのPOST時はCORSプリフライトを避けるためtext/plain等で送るか、通常のリクエストとして送信
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
       });
+      if (!response.ok) {
+        throw new Error(`サーバーエラー: ${response.status} ${response.statusText}`);
+      }
+      const data = await response.json();
+      return data;
     }
 
     window.executeSettlement = function() {
@@ -705,7 +663,7 @@
       <div class="receipt-box">
         <label for="receipt-file">レシート画像（任意）</label>
         <input type="file" id="receipt-file" accept="image/*" capture="environment">
-        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します。</div>
+        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します（JSON直接通信版）。</div>
       </div>
 
       <label class="checkbox-label">
@@ -785,7 +743,7 @@
 
       <!-- システム更新日時 -->
       <div class="version-info">
-        ⚙️ システム情報（通信・応答判定強化版）
+        ⚙️ システム情報（JSON返信型・fetch直接通信版）
       </div>
     </div>
 
