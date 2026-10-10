@@ -58,6 +58,7 @@
     .receipt-box { background: #f0f9ff; border: 1px dashed #7dd3fc; padding: 12px; border-radius: 8px; margin-top: 14px; }
     .receipt-help { color: #555; font-size: 0.82em; line-height: 1.5; }
     .receipt-link { display: inline-block; margin-top: 6px; color: #075985; font-weight: bold; }
+    .receipt-upload-btn { background: #17a2b8; font-size: 0.8em; padding: 4px 8px; width: auto; margin-top: 4px; display: inline-block; }
 
     /* バージョン情報表示スタイル */
     .version-info { text-align: center; font-size: 0.8em; color: #6c757d; margin-top: 16px; padding-top: 8px; border-top: 1px dashed #ced4da; }
@@ -101,7 +102,6 @@
     let eventsList = { "default": "日常の貸し借り" };
     let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
     let currentSettlementData = null;
-    let cameraStream = null;
 
     onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
       const data = snapshot.val();
@@ -276,7 +276,12 @@
                 }
               </div>
               ${item.purchaseContent ? `<div style="font-size:0.9em;color:#555;">購入内容：${escapeHtml(item.purchaseContent)}</div>` : ''}
-              ${item.receiptUrl ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` : ''}
+              <div style="margin-top: 4px;">
+                ${item.receiptUrl 
+                  ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` 
+                  : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*" style="display:none;" onchange="uploadLateReceipt('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
+                }
+              </div>
             `;
             historyList.appendChild(li);
           }
@@ -373,8 +378,6 @@
 
       document.getElementById(`tab-btn-${tabName}`).classList.add('active');
       document.getElementById(`tab-${tabName}`).classList.add('active');
-
-      if (tabName !== 'input') stopCamera();
     };
 
     window.addEvent = function() {
@@ -404,6 +407,7 @@
       alert('設定を保存しました。アップロード用の合言葉はこの端末にのみ保存しました。');
     };
 
+    // --- メインの追加処理（データを先に登録し、画像は後から裏でアップロード） ---
     window.addEntry = async function() {
       const payer = document.getElementById('payer').value;
       const amount = Number(document.getElementById('amount').value);
@@ -418,51 +422,100 @@
 
       const addButton = document.getElementById('add-entry-button');
       addButton.disabled = true;
+      addButton.textContent = 'データを保存中…';
 
       try {
-        let receiptUrl = '';
-        if (receiptFile) {
-          const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
-          const pin = document.getElementById('receipt-pin-input').value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-          if (!uploadUrl) throw new Error('先に設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
-          if (!pin) throw new Error('レシート保存用の合言葉を入力してください。');
-          if (!receiptFile.type.startsWith('image/')) throw new Error('レシートは画像ファイルを選んでください。');
-
-          // 1. 画像圧縮・リサイズ
-          addButton.textContent = '📸 レシート画像を軽量化中… (10%)';
-          const compressed = await compressReceiptImage(receiptFile);
-
-          // 2. アップロード送信
-          addButton.textContent = '📤 ドライブへ送信中… (50%)';
-          const uploaded = await uploadReceiptViaForm(uploadUrl, {
-            action: 'upload', roomId, pin, fileName: `${date}_${purchasePlace}_${Date.now()}.jpg`,
-            mimeType: 'image/jpeg', data: compressed.split(',')[1]
-          });
-          if (!uploaded.ok || !uploaded.url) throw new Error(uploaded.error || 'レシート画像を保存できませんでした。');
-          receiptUrl = uploaded.url;
-        }
-
-        addButton.textContent = '💾 データを保存中… (90%)';
+        // 1. レシート有無に関わらず、まずはFirebaseへデータを即座に保存する
         const itemRef = push(ref(db, `rooms/${roomId}/items`));
+        const newItemId = itemRef.key;
+        
         await set(itemRef, {
-          payer, amount, note: purchasePlace, purchasePlace, purchaseContent, receiptUrl,
+          payer, amount, note: purchasePlace, purchasePlace, purchaseContent, receiptUrl: '',
           date, eventId, timestamp: Date.now(), deleteRequested: false, isSettlement: false
         });
 
+        // フォームをクリアして先に画面を切り替え
         document.getElementById('amount').value = '';
         document.getElementById('purchase-place').value = '';
         document.getElementById('purchase-content').value = '';
         document.getElementById('receipt-file').value = '';
         document.getElementById('date').value = today;
-        stopCamera();
+
         if (autoSwitch) switchTab('history');
         else alert('追加しました！');
+
+        // 2. レシートファイルがある場合は、バックグラウンドでアップロードを試みる
+        if (receiptFile) {
+          uploadReceiptInBackground(newItemId, receiptFile, date, purchasePlace);
+        }
+
       } catch (err) {
         console.error(err);
         alert(`登録できませんでした：${err.message || err}`);
       } finally {
         addButton.disabled = false;
         addButton.textContent = '追加する';
+      }
+    };
+
+    // --- バックグラウンドアップロード処理 ---
+    async function uploadReceiptInBackground(itemId, receiptFile, date, purchasePlace) {
+      try {
+        const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
+        const pin = document.getElementById('receipt-pin-input').value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
+        if (!uploadUrl || !pin) return; // 設定がなければスキップ（履歴にはデータが残っている）
+
+        const compressed = await compressReceiptImage(receiptFile);
+        const uploaded = await uploadReceiptViaForm(uploadUrl, {
+          action: 'upload', roomId, pin, fileName: `${date}_${purchasePlace}_${Date.now()}.jpg`,
+          mimeType: 'image/jpeg', data: compressed.split(',')[1]
+        });
+
+        if (uploaded.ok && uploaded.url) {
+          // アップロード成功したら、該当項目の receiptUrl を更新
+          await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
+            receiptUrl: uploaded.url
+          });
+        }
+      } catch (e) {
+        console.warn('レシート画像のバックグラウンドアップロードに失敗しました:', e);
+      }
+    }
+
+    // --- 履歴から後からレシートを追加する処理 ---
+    window.uploadLateReceipt = async function(itemId) {
+      const fileInput = document.getElementById(`late-receipt-${itemId}`);
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
+      const pin = document.getElementById(`receipt-pin-input`)?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
+      
+      if (!uploadUrl) {
+        alert('設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
+        return;
+      }
+      if (!pin) {
+        alert('設定タブでレシート保存用の合言葉を入力してください。');
+        return;
+      }
+
+      try {
+        alert('レシートのアップロードを開始します。');
+        const compressed = await compressReceiptImage(file);
+        const uploaded = await uploadReceiptViaForm(uploadUrl, {
+          action: 'upload', roomId, pin, fileName: `late_${Date.now()}.jpg`,
+          mimeType: 'image/jpeg', data: compressed.split(',')[1]
+        });
+
+        if (!uploaded.ok || !uploaded.url) throw new Error(uploaded.error || 'アップロードに失敗しました');
+
+        await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
+          receiptUrl: uploaded.url
+        });
+        alert('レシートを追加しました！');
+      } catch (err) {
+        alert(`レシートを追加できませんでした：${err.message}`);
       }
     };
 
@@ -474,14 +527,12 @@
           const img = new Image();
           img.onerror = () => reject(new Error('画像を開けませんでした。'));
           img.onload = () => {
-            // 金額が判別できる最低限の解像度（長辺を最大1000pxに縮小）
             const maxSide = 1000;
             const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
             const canvas = document.createElement('canvas');
             canvas.width = Math.max(1, Math.round(img.width * scale));
             canvas.height = Math.max(1, Math.round(img.height * scale));
             canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-            // 画質を0.5（50%）に落としてファイルサイズを大幅に削減
             let result = canvas.toDataURL('image/jpeg', 0.5);
             if (result.length > 500_000) result = canvas.toDataURL('image/jpeg', 0.4);
             resolve(result);
@@ -517,8 +568,6 @@
         form.submit();
       });
     }
-
-    window.stopCamera = function() {};
 
     window.executeSettlement = function() {
       if (!currentSettlementData) return;
@@ -629,7 +678,7 @@
       <div class="receipt-box">
         <label for="receipt-file">レシート画像（任意）</label>
         <input type="file" id="receipt-file" accept="image/*" capture="environment">
-        <div class="receipt-help">画像を選ぶと、レシート専用Googleドライブに保存し、購入記録にリンクを紐づけます。金額がしっかり読める最低限の画質（軽量）に自動縮小します。</div>
+        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信し自動で紐づけます。失敗してもデータはすぐに履歴に保存され、後から追加できます。</div>
       </div>
 
       <label class="checkbox-label">
@@ -703,13 +752,13 @@
       <input type="url" id="drive-upload-url" placeholder="https://script.google.com/macros/s/.../exec">
       <label>レシート保存用の合言葉（この端末に保存）</label>
       <input type="password" id="receipt-pin-input" placeholder="Apps Script側で設定した合言葉">
-      <p class="receipt-help">合言葉は共有データベースには保存せず、このブラウザ内に保存します。あなたと相手の端末で同じ合言葉を入力してください。Apps Scriptの公開設定が必要です。</p>
+      <p class="receipt-help">合言葉は共有データベースには保存せず、このブラウザ内に保存します。あなたと相手の端末で同じ合言葉を入力してください。</p>
 
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <!-- システム更新日時 -->
       <div class="version-info">
-        ⚙️ システム情報（進捗表示・軽量リサイズ対応版　）
+        ⚙️ システム情報（データ優先・後からレシート追加対応版）
       </div>
     </div>
 
