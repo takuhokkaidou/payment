@@ -276,7 +276,7 @@
 
       const sortedNotes = Object.keys(noteCounts)
         .sort((a, b) => noteCounts[b] - noteCounts[a])
-        .slice(0, 5);
+        .slice(0, 10);
 
       const quickNotesContainer = document.getElementById('quick-notes');
       if (!quickNotesContainer) return;
