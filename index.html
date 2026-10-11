@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（PDF範囲選択・画像変換対応版）</title>
+  <title>ふたりの貸し借りメモ（負担区分対応・JSON通信版）</title>
   <!-- PDF.js読み込み -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -67,7 +67,6 @@
 
     .event-manage-box { background: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #e9ecef; margin-top: 6px; }
 
-    /* PDFトリミングモーダル用スタイル */
     #pdf-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; overflow: auto; padding: 16px; box-sizing: border-box; }
     .modal-content { background: white; max-width: 450px; margin: 20px auto; padding: 16px; border-radius: 12px; text-align: center; }
     #pdf-canvas-container { position: relative; display: inline-block; cursor: crosshair; max-width: 100%; overflow: hidden; border: 1px solid #ccc; }
@@ -122,7 +121,6 @@
     let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
     let currentSettlementData = null;
 
-    // 保管用ファイル（通常画像またはトリミング済みPDF画像）
     let selectedImageBlob = null;
     let croppedPdfDataUrl = null;
 
@@ -166,6 +164,13 @@
       if (payerSelect && payerSelect.options.length >= 2) {
         payerSelect.options[0].text = currentSettings.nameA;
         payerSelect.options[1].text = currentSettings.nameB;
+      }
+
+      const splitTypeSelect = document.getElementById('split-type');
+      if (splitTypeSelect && splitTypeSelect.options.length >= 3) {
+        splitTypeSelect.options[0].text = `二人で折半`;
+        splitTypeSelect.options[1].text = `${currentSettings.nameA}の全額負担`;
+        splitTypeSelect.options[2].text = `${currentSettings.nameB}の全額負担`;
       }
 
       const roleSelect = document.getElementById('my-role');
@@ -319,8 +324,7 @@
       const selectedPeriod = monthFilter.value;
       const selectedEvent = eventFilter.value;
 
-      let totalA = 0;
-      let totalB = 0;
+      let netA = 0; // Aさんが他人のために立て替えた純額（プラスならAさんが受け取る、マイナスならBさんが受け取る）
       
       historyList.innerHTML = '';
       approvalBox.innerHTML = '';
@@ -329,7 +333,9 @@
       const entries = Object.entries(rawDataCache).reverse();
 
       entries.forEach(([id, item]) => {
-        const payerName = item.payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
+        const payer = item.payer; // 'A' or 'B'
+        const amount = item.amount;
+        const splitType = item.splitType || 'half'; // 'half', 'A_only', 'B_only'
 
         if (item.deleteRequested) {
           const requestedByName = item.deleteRequestedBy === 'A' ? currentSettings.nameA : currentSettings.nameB;
@@ -341,7 +347,7 @@
             approvalDiv.className = 'approval-item';
             approvalDiv.innerHTML = `
               <div><strong>${requestedByName}</strong>が削除を申請中:</div>
-              <div>${item.date} ${payerName} ¥${item.amount.toLocaleString()} (${escapeHtml(item.purchasePlace || item.note || '場所未入力')})</div>
+              <div>${item.date} 払込者:${payer === 'A' ? currentSettings.nameA : currentSettings.nameB} ¥${amount.toLocaleString()}</div>
               <div class="approval-btns">
                 <button class="btn-approve" onclick="approveDelete('${id}')">許可して削除</button>
                 <button class="btn-reject" onclick="rejectDelete('${id}')">拒否</button>
@@ -353,22 +359,39 @@
 
         if (isMatchEvent(item, selectedEvent)) {
           if (isMatchPeriod(item.date || '', selectedPeriod)) {
-            if (!item.deleteRequested) {
-              if (item.payer === 'A') totalA += item.amount;
-              if (item.payer === 'B') totalB += item.amount;
+            if (!item.deleteRequested && !item.isSettlement) {
+              // 貸し借りバランスの計算
+              // splitType: 'half' -> 支払った人の勝ち分は amount / 2
+              // splitType: 'A_only' -> Aさんのもの（Bが全額払ったらBの勝ち、Aが払ったら0）
+              // splitType: 'B_only' -> Bさんのもの（Aが全額払ったらAの勝ち、Bが払ったら0）
+              if (splitType === 'half') {
+                if (payer === 'A') netA += amount / 2;
+                else netA -= amount / 2;
+              } else if (splitType === 'A_only') {
+                if (payer === 'B') netA -= amount; // BがAの分を全額払った -> AはBに全額返す必要あり
+                else netA += amount; // Aが自分の分を払った（立て替えなし）
+              } else if (splitType === 'B_only') {
+                if (payer === 'A') netA += amount; // AがBの分を全額払った -> BはAに全額返す必要あり
+                else netA -= amount; // Bが自分の分を払った
+              }
             }
 
             const isMyRequest = item.deleteRequestedBy === currentUserRole;
             const eventName = eventsList[item.eventId] || '日常の貸し借り';
+            const payerName = payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
+            
+            let splitLabel = '折半';
+            if (splitType === 'A_only') splitLabel = `${currentSettings.nameA}の分`;
+            if (splitType === 'B_only') splitLabel = `${currentSettings.nameB}の分`;
 
             const li = document.createElement('li');
             li.innerHTML = `
               <div class="item-header">
                 <span>📅 ${item.date || '日付未設定'} [${escapeHtml(eventName)}] ${item.isSettlement ? '<span class="settled-badge">🧹 清算済</span>' : ''}</span>
-                <span><strong>${payerName}</strong></span>
+                <span>負担: <strong>${splitLabel}</strong></span>
               </div>
               <div class="item-body">
-                <span>¥${item.amount.toLocaleString()} (${escapeHtml(item.purchasePlace || item.note || '場所未入力')})</span>
+                <span>${payerName}が ¥${amount.toLocaleString()} 支払い (${escapeHtml(item.purchasePlace || item.note || '場所未入力')})</span>
                 ${item.deleteRequested 
                   ? (isMyRequest 
                       ? `<div style="display:flex; align-items:center; gap:6px;"><span class="pending-badge">相手の承認待ち ⏳</span><button class="btn-delete" style="background:#6c757d;" onclick="rejectDelete('${id}')">取消</button></div>` 
@@ -396,39 +419,34 @@
 
       const nameA = currentSettings.nameA;
       const nameB = currentSettings.nameB;
-      const filteredTotal = totalA + totalB;
 
       const summaryBox = document.getElementById('filter-summary-box');
       if (summaryBox) {
         summaryBox.innerHTML = `
-          <div><span>${nameA}の支払額:</span><span>¥${totalA.toLocaleString()}</span></div>
-          <div><span>${nameB}の支払額:</span><span>¥${totalB.toLocaleString()}</span></div>
-          <div><span>絞り込み合計:</span><span>¥${filteredTotal.toLocaleString()}</span></div>
+          <div><span>現在の貸し借り状態:</span><span>${netA === 0 ? '±0円' : (netA > 0 ? `${nameB} → ${nameA} へ ¥${Math.abs(netA).toLocaleString()}` : `${nameA} → ${nameB} へ ¥${Math.abs(netA).toLocaleString()}`)}</span></div>
         `;
       }
 
-      const diff = totalA - totalB;
       const settlementEl = document.getElementById('settlement');
       const btnSettle = document.getElementById('btn-settle');
 
       if (settlementEl && btnSettle) {
-        if (diff === 0) {
+        if (Math.abs(netA) < 1) {
           settlementEl.innerText = "貸し借りは現在ありません 👏";
           btnSettle.style.display = 'none';
           currentSettlementData = null;
         } else {
-          const settleAmount = Math.abs(diff) / 2;
-          const totalAmountToLog = Math.abs(diff);
-          let payer, payerName, receiverName;
+          const settleAmount = Math.abs(netA);
+          let payerName, receiverName, payerCode;
 
-          if (diff > 0) {
-            payer = 'B';
+          if (netA > 0) {
             payerName = nameB;
             receiverName = nameA;
+            payerCode = 'B';
           } else {
-            payer = 'A';
             payerName = nameA;
             receiverName = nameB;
+            payerCode = 'A';
           }
 
           settlementEl.innerText = `${payerName} → ${receiverName} へ ¥${settleAmount.toLocaleString()} 支払う`;
@@ -436,8 +454,8 @@
           btnSettle.style.display = 'block';
           btnSettle.innerText = `🧹 ${payerName} が清算 (¥${settleAmount.toLocaleString()}) を記録する`;
           currentSettlementData = {
-            payer: payer,
-            totalAmount: totalAmountToLog,
+            payer: payerCode,
+            totalAmount: settleAmount,
             displayAmount: settleAmount,
             payerName: payerName
           };
@@ -567,7 +585,6 @@
       alert('設定を保存しました。');
     };
 
-    // --- ファイル入力およびPDFトリミングの処理 ---
     function setupFileHandlers() {
       const fileInput = document.getElementById('receipt-file');
       if (!fileInput) return;
@@ -577,10 +594,8 @@
         if (!file) return;
 
         if (file.type === 'application/pdf') {
-          // PDFの場合はモーダルを表示してトリミング処理へ
           await openPdfCropModal(file);
         } else {
-          // 通常の画像
           selectedImageBlob = file;
           croppedPdfDataUrl = null;
           showSelectedIndicator(file.name);
@@ -599,7 +614,6 @@
       ind.textContent = `選択中: ${text}`;
     }
 
-    // PDF.jsを使ったモーダルと切り抜き処理
     async function openPdfCropModal(pdfFile) {
       const modal = document.getElementById('pdf-modal');
       modal.style.display = 'block';
@@ -718,6 +732,7 @@
     window.addEntry = async function() {
       const payerEl = document.getElementById('payer');
       const amountEl = document.getElementById('amount');
+      const splitTypeEl = document.getElementById('split-type');
       const placeEl = document.getElementById('purchase-place');
       const contentEl = document.getElementById('purchase-content');
       const dateEl = document.getElementById('date');
@@ -726,6 +741,7 @@
 
       const payer = payerEl ? payerEl.value : 'A';
       const amount = amountEl ? Number(amountEl.value) : 0;
+      const splitType = splitTypeEl ? splitTypeEl.value : 'half';
       const purchasePlace = (placeEl && placeEl.value.trim()) || '場所未入力';
       const purchaseContent = (contentEl && contentEl.value.trim()) || '';
       const date = (dateEl && dateEl.value) || new Date().toISOString().split('T')[0];
@@ -745,7 +761,7 @@
         const newItemId = itemRef.key;
         
         await set(itemRef, {
-          payer, amount, note: purchasePlace, purchasePlace, purchaseContent, receiptUrl: '',
+          payer, amount, splitType, note: purchasePlace, purchasePlace, purchaseContent, receiptUrl: '',
           date, eventId, timestamp: Date.now(), deleteRequested: false, isSettlement: false
         });
 
@@ -831,7 +847,7 @@
       if (!file) return;
 
       if (file.type === 'application/pdf') {
-        alert('PDFからの追加は入力画面からの新規追加をご利用ください（または画像を保存して追加してください）。');
+        alert('PDFからの追加は入力画面からの新規追加をご利用ください。');
         return;
       }
 
@@ -910,6 +926,7 @@
         push(ref(db, `rooms/${roomId}/items`), {
           payer: payer,
           amount: totalAmount,
+          splitType: 'half',
           note: `清算（¥${displayAmount.toLocaleString()} 支払い）`,
           purchasePlace: '清算', purchaseContent: `¥${displayAmount.toLocaleString()} 支払い`, receiptUrl: '',
           date: todayStr,
@@ -1003,15 +1020,22 @@
         <option value="B">Bさん</option>
       </select>
 
+      <label>負担の分け方</label>
+      <select id="split-type">
+        <option value="half">二人で折半</option>
+        <option value="A_only">Aさんの全額負担</option>
+        <option value="B_only">Bさんの全額負担</option>
+      </select>
+
       <label>金額（円）</label>
-      <input type="number" id="amount" placeholder="例: 1500" inputmode="numeric">
+      <input type="number" id="amount" placeholder="例: 500" inputmode="numeric">
 
       <label>購入場所</label>
       <input type="text" id="purchase-place" placeholder="例：スーパー、コンビニ、Amazon">
       <div class="quick-notes" id="quick-notes"></div>
 
       <label>購入内容</label>
-      <input type="text" id="purchase-content" placeholder="例：食料品、日用品、洗剤など">
+      <input type="text" id="purchase-content" placeholder="例：食料品、日用品など">
 
       <div class="receipt-box">
         <label for="receipt-file">レシート画像 / PDF（任意）</label>
@@ -1111,7 +1135,7 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（PDFトリミング対応版）
+        ⚙️ システム情報（負担区分対応版）
       </div>
     </div>
 
