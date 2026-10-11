@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（イベント管理対応・JSON通信版）</title>
+  <title>ふたりの貸し借りメモ（イベントプルダウン管理対応・JSON通信版）</title>
   <style>
     body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 16px; background: #f4f6f8; color: #333; }
     .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
@@ -60,13 +60,7 @@
     .receipt-link { display: inline-block; margin-top: 6px; color: #075985; font-weight: bold; }
     .receipt-upload-btn { background: #17a2b8; font-size: 0.8em; padding: 4px 8px; width: auto; margin-top: 4px; display: inline-block; }
 
-    /* イベント管理用リストスタイル */
-    .event-manage-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-    .event-manage-item { display: flex; gap: 6px; align-items: center; background: #f8f9fa; padding: 8px; border-radius: 6px; border: 1px solid #e9ecef; }
-    .event-manage-item input { margin-top: 0; padding: 8px; font-size: 0.9em; }
-    .event-manage-item button { margin-top: 0; width: auto; padding: 8px 12px; font-size: 0.85em; white-space: nowrap; }
-    .btn-event-update { background: #28a745; }
-    .btn-event-delete { background: #dc3545; }
+    .event-manage-box { background: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #e9ecef; margin-top: 6px; }
 
     .version-info { text-align: center; font-size: 0.8em; color: #6c757d; margin-top: 16px; padding-top: 8px; border-top: 1px dashed #ced4da; }
   </style>
@@ -160,51 +154,79 @@
         <option value="all">すべてのイベント/テーマ</option>
         <option value="unsettled">未清算の項目のみ</option>
         <option value="settled">清算済の項目のみ</option>
+        <option disabled>------------------------</option>
       `;
 
       const entryEventSelect = document.getElementById('entry-event');
       entryEventSelect.innerHTML = '';
 
-      // 設定タブのイベント管理リストUI
-      const manageContainer = document.getElementById('event-manage-list');
-      manageContainer.innerHTML = '';
+      const manageSelect = document.getElementById('manage-event-select');
+      manageSelect.innerHTML = '';
+
+      let hasCustomEvents = false;
+      const customEventsHtml = [];
 
       Object.entries(eventsList).forEach(([key, name]) => {
-        // 絞り込み用
-        const opt1 = document.createElement('option');
-        opt1.value = key;
-        opt1.textContent = name;
-        eventFilter.appendChild(opt1);
-
         // 入力用
         const opt2 = document.createElement('option');
         opt2.value = key;
         opt2.textContent = name;
         entryEventSelect.appendChild(opt2);
 
-        // 設定タブでの管理行（default以外は編集・削除可能）
-        const itemDiv = document.createElement('div');
-        itemDiv.className = 'event-manage-item';
+        // 管理プルダウン用
+        const optManage = document.createElement('option');
+        optManage.value = key;
+        optManage.textContent = name;
+        manageSelect.appendChild(optManage);
+
         if (key === 'default') {
-          itemDiv.innerHTML = `
-            <input type="text" value="${escapeHtml(name)}" disabled style="background:#e9ecef; color:#666;">
-            <span style="font-size:0.8em; color:#666; padding:0 8px;">(基本)</span>
-          `;
+          const opt1 = document.createElement('option');
+          opt1.value = key;
+          opt1.textContent = name;
+          eventFilter.appendChild(opt1);
         } else {
-          itemDiv.innerHTML = `
-            <input type="text" id="event-input-${key}" value="${escapeHtml(name)}">
-            <button type="button" class="btn-event-update" onclick="updateEvent('${key}')">更新</button>
-            <button type="button" class="btn-event-delete" onclick="deleteEvent('${key}')">削除</button>
-          `;
+          hasCustomEvents = true;
+          const opt1 = document.createElement('option');
+          opt1.value = key;
+          opt1.textContent = name;
+          customEventsHtml.push(opt1);
         }
-        manageContainer.appendChild(itemDiv);
       });
+
+      if (hasCustomEvents) {
+        const divider = document.createElement('option');
+        divider.disabled = true;
+        divider.textContent = '--- 自作イベント ---';
+        eventFilter.appendChild(divider);
+        customEventsHtml.forEach(opt => eventFilter.appendChild(opt));
+      }
 
       eventFilter.value = selectedVal || 'all';
       if (selectedVal && selectedVal !== 'all' && selectedVal !== 'unsettled' && selectedVal !== 'settled') {
         entryEventSelect.value = selectedVal;
       }
+
+      // 管理セレクトボックスが変更されたときに下の入力欄を連動させる
+      onManageEventChange();
     }
+
+    // 管理プルダウンで選択されたイベント名をテキストボックスに反映
+    window.onManageEventChange = function() {
+      const select = document.getElementById('manage-event-select');
+      const selectedKey = select.value;
+      const nameInput = document.getElementById('manage-event-name-input');
+      const deleteBtn = document.getElementById('btn-delete-event');
+
+      if (selectedKey && eventsList[selectedKey]) {
+        nameInput.value = eventsList[selectedKey];
+        // デフォルト（日常の貸し借り）は削除ボタンを非表示にする
+        if (selectedKey === 'default') {
+          deleteBtn.style.display = 'none';
+        } else {
+          deleteBtn.style.display = 'inline-block';
+        }
+      }
+    };
 
     function updateQuickNotes() {
       const noteCounts = {};
@@ -225,620 +247,4 @@
       sortedNotes.forEach(note => {
         const btn = document.createElement('button');
         btn.className = 'note-btn';
-        btn.type = 'button';
-        btn.textContent = note;
-        btn.onclick = () => { document.getElementById('purchase-place').value = note; };
-        quickNotesContainer.appendChild(btn);
-      });
-    }
-
-    function isMatchPeriod(itemDate, selectedPeriod) {
-      if (selectedPeriod === 'all') return true;
-      if (selectedPeriod.length === 4) {
-        return itemDate.substring(0, 4) === selectedPeriod;
-      } else {
-        return itemDate.substring(0, 7) === selectedPeriod;
-      }
-    }
-
-    function isMatchEvent(item, selectedEvent) {
-      if (selectedEvent === 'all') return true;
-      if (selectedEvent === 'unsettled') return !item.isSettlement;
-      if (selectedEvent === 'settled') return !!item.isSettlement;
-      
-      const itemEvent = item.eventId || 'default';
-      return itemEvent === selectedEvent;
-    }
-
-    function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-    }
-
-    function renderApp() {
-      const selectedPeriod = document.getElementById('month-filter').value;
-      const selectedEvent = document.getElementById('event-filter').value;
-
-      let totalA = 0;
-      let totalB = 0;
-      const historyList = document.getElementById('history');
-      const approvalBox = document.getElementById('approval-requests-box');
-      
-      historyList.innerHTML = '';
-      approvalBox.innerHTML = '';
-      let pendingCount = 0;
-
-      const entries = Object.entries(rawDataCache).reverse();
-
-      entries.forEach(([id, item]) => {
-        const payerName = item.payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
-
-        if (item.deleteRequested) {
-          const requestedByName = item.deleteRequestedBy === 'A' ? currentSettings.nameA : currentSettings.nameB;
-          const isMyRequest = item.deleteRequestedBy === currentUserRole;
-
-          if (!isMyRequest) {
-            pendingCount++;
-            const approvalDiv = document.createElement('div');
-            approvalDiv.className = 'approval-item';
-            approvalDiv.innerHTML = `
-              <div><strong>${requestedByName}</strong>が削除を申請中:</div>
-              <div>${item.date} ${payerName} ¥${item.amount.toLocaleString()} (${escapeHtml(item.purchasePlace || item.note || '場所未入力')})</div>
-              <div class="approval-btns">
-                <button class="btn-approve" onclick="approveDelete('${id}')">許可して削除</button>
-                <button class="btn-reject" onclick="rejectDelete('${id}')">拒否</button>
-              </div>
-            `;
-            approvalBox.appendChild(approvalDiv);
-          }
-        }
-
-        if (isMatchEvent(item, selectedEvent)) {
-          if (isMatchPeriod(item.date || '', selectedPeriod)) {
-            if (!item.deleteRequested) {
-              if (item.payer === 'A') totalA += item.amount;
-              if (item.payer === 'B') totalB += item.amount;
-            }
-
-            const isMyRequest = item.deleteRequestedBy === currentUserRole;
-            const eventName = eventsList[item.eventId] || '日常の貸し借り';
-
-            const li = document.createElement('li');
-            li.innerHTML = `
-              <div class="item-header">
-                <span>📅 ${item.date || '日付未設定'} [${escapeHtml(eventName)}] ${item.isSettlement ? '<span class="settled-badge">🧹 清算済</span>' : ''}</span>
-                <span><strong>${payerName}</strong></span>
-              </div>
-              <div class="item-body">
-                <span>¥${item.amount.toLocaleString()} (${escapeHtml(item.purchasePlace || item.note || '場所未入力')})</span>
-                ${item.deleteRequested 
-                  ? (isMyRequest 
-                      ? `<div style="display:flex; align-items:center; gap:6px;"><span class="pending-badge">相手の承認待ち ⏳</span><button class="btn-delete" style="background:#6c757d;" onclick="rejectDelete('${id}')">取消</button></div>` 
-                      : `<span class="pending-badge">削除許可待ち</span>`)
-                  : `<button class="btn-delete" onclick="requestDelete('${id}')">削除 🗑️</button>`
-                }
-              </div>
-              ${item.purchaseContent ? `<div style="font-size:0.9em;color:#555;">購入内容：${escapeHtml(item.purchaseContent)}</div>` : ''}
-              <div style="margin-top: 4px;">
-                ${item.receiptUrl 
-                  ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` 
-                  : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*" style="display:none;" onchange="uploadLateReceipt('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
-                }
-              </div>
-            `;
-            historyList.appendChild(li);
-          }
-        }
-      });
-
-      const approvalContainer = document.getElementById('approval-container');
-      approvalContainer.style.display = pendingCount > 0 ? 'block' : 'none';
-
-      updatePeriodOptions(entries, selectedEvent, selectedPeriod);
-
-      const nameA = currentSettings.nameA;
-      const nameB = currentSettings.nameB;
-      const filteredTotal = totalA + totalB;
-
-      document.getElementById('filter-summary-box').innerHTML = `
-        <div><span>${nameA}の支払額:</span><span>¥${totalA.toLocaleString()}</span></div>
-        <div><span>${nameB}の支払額:</span><span>¥${totalB.toLocaleString()}</span></div>
-        <div><span>絞り込み合計:</span><span>¥${filteredTotal.toLocaleString()}</span></div>
-      `;
-
-      const diff = totalA - totalB;
-      const settlementEl = document.getElementById('settlement');
-      const btnSettle = document.getElementById('btn-settle');
-
-      if (diff === 0) {
-        settlementEl.innerText = "貸し借りは現在ありません 👏";
-        btnSettle.style.display = 'none';
-        currentSettlementData = null;
-      } else {
-        const settleAmount = Math.abs(diff) / 2;
-        const totalAmountToLog = Math.abs(diff);
-        let payer, payerName, receiverName;
-
-        if (diff > 0) {
-          payer = 'B';
-          payerName = nameB;
-          receiverName = nameA;
-        } else {
-          payer = 'A';
-          payerName = nameA;
-          receiverName = nameB;
-        }
-
-        settlementEl.innerText = `${payerName} → ${receiverName} へ ¥${settleAmount.toLocaleString()} 支払う`;
-        
-        btnSettle.style.display = 'block';
-        btnSettle.innerText = `🧹 ${payerName} が清算 (¥${settleAmount.toLocaleString()}) を記録する`;
-        currentSettlementData = {
-          payer: payer,
-          totalAmount: totalAmountToLog,
-          displayAmount: settleAmount,
-          payerName: payerName
-        };
-      }
-    }
-
-    function updatePeriodOptions(entries, selectedEvent, currentSelected) {
-      const filterSelect = document.getElementById('month-filter');
-      const years = new Set();
-      const months = new Set();
-
-      entries.forEach(([id, item]) => {
-        if (isMatchEvent(item, selectedEvent) && item.date && item.date.length >= 7) {
-          years.add(item.date.substring(0, 4));
-          months.add(item.date.substring(0, 7));
-        }
-      });
-
-      filterSelect.innerHTML = '<option value="all">すべての期間</option>';
-      
-      Array.from(years).sort().reverse().forEach(y => {
-        const opt = document.createElement('option');
-        opt.value = y;
-        opt.textContent = `${y}年（年間すべて）`;
-        if (y === currentSelected) opt.selected = true;
-        filterSelect.appendChild(opt);
-      });
-
-      Array.from(months).sort().reverse().forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m;
-        opt.textContent = m.replace('-', '年') + '月';
-        if (m === currentSelected) opt.selected = true;
-        filterSelect.appendChild(opt);
-      });
-
-      if (currentSelected === 'all') filterSelect.value = 'all';
-    }
-
-    window.switchTab = function(tabName) {
-      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-
-      document.getElementById(`tab-btn-${tabName}`).classList.add('active');
-      document.getElementById(`tab-${tabName}`).classList.add('active');
-    };
-
-    window.addEvent = function() {
-      const nameInput = document.getElementById('new-event-name');
-      const eventName = nameInput.value.trim();
-      if (!eventName) return alert('イベント名を入力してください');
-
-      const eventId = 'event_' + Date.now();
-      eventsList[eventId] = eventName;
-      set(ref(db, `rooms/${roomId}/events`), eventsList);
-
-      currentSettings.currentEvent = eventId;
-      set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-
-      nameInput.value = '';
-      alert(`イベント「${eventName}」を作成しました！`);
-    };
-
-    // イベント名の更新（編集）
-    window.updateEvent = function(eventId) {
-      const inputEl = document.getElementById(`event-input-${eventId}`);
-      const newName = inputEl.value.trim();
-      if (!newName) return alert('イベント名を入力してください');
-
-      eventsList[eventId] = newName;
-      set(ref(db, `rooms/${roomId}/events`), eventsList);
-      alert('イベント名を更新しました！');
-    };
-
-    // イベントの削除
-    window.deleteEvent = function(eventId) {
-      if (!confirm(`このイベントを削除しますか？\n※削除したイベントに属していた履歴データは「日常の貸し借り」に移動します。`)) return;
-
-      // 該当イベントに紐づくアイテムの eventId を 'default' に変更する
-      Object.entries(rawDataCache).forEach(([itemId, item]) => {
-        if (item.eventId === eventId) {
-          update(ref(db, `rooms/${roomId}/items/${itemId}`), { eventId: 'default' });
-        }
-      });
-
-      // イベントリストから削除
-      delete eventsList[eventId];
-      set(ref(db, `rooms/${roomId}/events`), eventsList);
-
-      // もし現在絞り込み表示中だったら 'all' に戻す
-      if (currentSettings.currentEvent === eventId) {
-        currentSettings.currentEvent = 'all';
-        set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-      }
-
-      alert('イベントを削除しました。');
-    };
-
-    window.saveNames = function() {
-      const nameA = document.getElementById('name-a-input').value.trim() || 'Aさん';
-      const nameB = document.getElementById('name-b-input').value.trim() || 'Bさん';
-      const driveUploadUrl = document.getElementById('drive-upload-url').value.trim();
-      currentSettings.nameA = nameA;
-      currentSettings.nameB = nameB;
-      currentSettings.driveUploadUrl = driveUploadUrl;
-      localStorage.setItem(`room_${roomId}_receipt_pin`, document.getElementById('receipt-pin-input').value.trim());
-      set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-      alert('設定を保存しました。アップロード用の合言葉はこの端末にのみ保存しました。');
-    };
-
-    window.addEntry = async function() {
-      const payer = document.getElementById('payer').value;
-      const amount = Number(document.getElementById('amount').value);
-      const purchasePlace = document.getElementById('purchase-place').value.trim() || '場所未入力';
-      const purchaseContent = document.getElementById('purchase-content').value.trim();
-      const date = document.getElementById('date').value;
-      const receiptFile = document.getElementById('receipt-file').files[0];
-      
-      let eventId = document.getElementById('entry-event').value;
-      if (!eventId) eventId = 'default';
-
-      const autoSwitch = document.getElementById('auto-switch-tab').checked;
-      if (!amount || amount < 0) return alert('金額を正しく入力してください');
-
-      const addButton = document.getElementById('add-entry-button');
-      addButton.disabled = true;
-      addButton.textContent = 'データを保存中…';
-
-      try {
-        const itemRef = push(ref(db, `rooms/${roomId}/items`));
-        const newItemId = itemRef.key;
-        
-        await set(itemRef, {
-          payer, amount, note: purchasePlace, purchasePlace, purchaseContent, receiptUrl: '',
-          date, eventId, timestamp: Date.now(), deleteRequested: false, isSettlement: false
-        });
-
-        document.getElementById('amount').value = '';
-        document.getElementById('purchase-place').value = '';
-        document.getElementById('purchase-content').value = '';
-        document.getElementById('receipt-file').value = '';
-        document.getElementById('date').value = today;
-
-        if (autoSwitch) switchTab('history');
-        else alert('追加しました！');
-
-        if (receiptFile) {
-          uploadReceiptInBackground(newItemId, receiptFile, date, purchasePlace);
-        }
-
-      } catch (err) {
-        console.error(err);
-        alert(`登録できませんでした：${err.message || err}`);
-      } finally {
-        addButton.disabled = false;
-        addButton.textContent = '追加する';
-      }
-    };
-
-    async function uploadReceiptInBackground(itemId, receiptFile, date, purchasePlace) {
-      try {
-        const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
-        const pin = document.getElementById('receipt-pin-input').value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-        if (!uploadUrl || !pin) return;
-
-        const compressed = await compressReceiptImage(receiptFile);
-        const uploaded = await uploadReceiptViaFetch(uploadUrl, {
-          action: 'upload', roomId, pin, fileName: `${date}_${purchasePlace}_${Date.now()}.jpg`,
-          mimeType: 'image/jpeg', data: compressed.split(',')[1]
-        });
-
-        if (uploaded.ok && uploaded.url) {
-          await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
-            receiptUrl: uploaded.url
-          });
-        } else {
-          alert(`⚠️ レシートの紐づけに失敗しました:\n${uploaded.error || '合言葉やURLを確認してください'}`);
-        }
-      } catch (e) {
-        console.warn('レシート画像のバックグラウンドアップロードに失敗しました:', e);
-        alert(`⚠️ レシートの紐づけ中にエラーが発生しました: ${e.message || e}`);
-      }
-    }
-
-    window.uploadLateReceipt = async function(itemId) {
-      const fileInput = document.getElementById(`late-receipt-${itemId}`);
-      const file = fileInput.files[0];
-      if (!file) return;
-
-      const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
-      const pin = document.getElementById(`receipt-pin-input`)?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-      
-      if (!uploadUrl) {
-        alert('設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
-        return;
-      }
-      if (!pin) {
-        alert('設定タブでレシート保存用の合言葉を入力してください。');
-        return;
-      }
-
-      try {
-        alert('レシートのアップロードを開始します。');
-        const compressed = await compressReceiptImage(file);
-        const uploaded = await uploadReceiptViaFetch(uploadUrl, {
-          action: 'upload', roomId, pin, fileName: `late_${Date.now()}.jpg`,
-          mimeType: 'image/jpeg', data: compressed.split(',')[1]
-        });
-
-        if (!uploaded.ok || !uploaded.url) throw new Error(uploaded.error || 'アップロードに失敗しました');
-
-        await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
-          receiptUrl: uploaded.url
-        });
-        alert('レシートを追加しました！');
-      } catch (err) {
-        alert(`レシートを追加できませんでした：${err.message}`);
-      }
-    };
-
-    function compressReceiptImage(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error('画像を読み込めませんでした。'));
-        reader.onload = () => {
-          const img = new Image();
-          img.onerror = () => reject(new Error('画像を開けませんでした。'));
-          img.onload = () => {
-            const maxSide = 1000;
-            const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-            const canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(img.width * scale));
-            canvas.height = Math.max(1, Math.round(img.height * scale));
-            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-            let result = canvas.toDataURL('image/jpeg', 0.5);
-            if (result.length > 500_000) result = canvas.toDataURL('image/jpeg', 0.4);
-            resolve(result);
-          };
-          img.src = reader.result;
-        };
-        reader.readAsDataURL(file);
-      });
-    }
-
-    async function uploadReceiptViaFetch(url, payload) {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        throw new Error(`サーバーエラー: ${response.status} ${response.statusText}`);
-      }
-      const data = await response.json();
-      return data;
-    }
-
-    window.executeSettlement = function() {
-      if (!currentSettlementData) return;
-      
-      const { payer, totalAmount, displayAmount, payerName } = currentSettlementData;
-      
-      if (confirm(`${payerName}さんが ¥${displayAmount.toLocaleString()} を支払い、貸し借りを清算（リセット）します。よろしいですか？`)) {
-        
-        let eventId = document.getElementById('entry-event').value || 'default';
-
-        push(ref(db, `rooms/${roomId}/items`), {
-          payer: payer,
-          amount: totalAmount,
-          note: `清算（¥${displayAmount.toLocaleString()} 支払い）`,
-          purchasePlace: '清算', purchaseContent: `¥${displayAmount.toLocaleString()} 支払い`, receiptUrl: '',
-          date: today,
-          eventId: eventId,
-          timestamp: Date.now(),
-          deleteRequested: false,
-          isSettlement: true
-        });
-
-        alert('清算を記録しました！');
-      }
-    };
-
-    window.requestDelete = function(itemId) {
-      if (confirm('相手に削除申請を送りますか？（相手が許可すると完全に削除されます）')) {
-        update(ref(db, `rooms/${roomId}/items/${itemId}`), {
-          deleteRequested: true,
-          deleteRequestedBy: currentUserRole
-        });
-      }
-    };
-
-    window.approveDelete = function(itemId) {
-      remove(ref(db, `rooms/${roomId}/items/${itemId}`));
-    };
-
-    window.rejectDelete = function(itemId) {
-      update(ref(db, `rooms/${roomId}/items/${itemId}`), {
-        deleteRequested: false,
-        deleteRequestedBy: null
-      });
-    };
-
-    window.onFilterChange = function() {
-      currentSettings.currentEvent = document.getElementById('event-filter').value;
-      set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-      renderApp();
-    };
-
-    window.copyShareUrl = function() {
-      const copyText = document.getElementById('share-url');
-      navigator.clipboard.writeText(copyText.value);
-      alert('共有用URLをコピーしました！LINEなどで相手に送信してください。');
-    };
-  </script>
-</head>
-<body>
-
-  <h2>💰 ふたりの貸し借りメモ</h2>
-
-  <!-- 操作者の立場設定 -->
-  <div class="my-role-select">
-    <span>操作者（あなた）: </span>
-    <select id="my-role" onchange="updateUserRole()" style="width: auto; padding: 4px 8px; margin-top: 0; display: inline-block;">
-      <option value="A">Aさん</option>
-      <option value="B">Bさん</option>
-    </select>
-  </div>
-
-  <div class="card">
-    <div id="settlement" class="result">読み込み中...</div>
-    <button id="btn-settle" class="btn-settle" onclick="executeSettlement()"></button>
-  </div>
-
-  <div class="tab-menu">
-    <button id="tab-btn-input" class="tab-btn active" onclick="switchTab('input')">✍️ 入力</button>
-    <button id="tab-btn-history" class="tab-btn" onclick="switchTab('history')">📜 履歴</button>
-    <button id="tab-btn-settings" class="tab-btn" onclick="switchTab('settings')">⚙️ 設定</button>
-  </div>
-
-  <div id="tab-input" class="tab-content active">
-    <div class="card">
-      <h3>立て替えを入力</h3>
-
-      <label>対象のイベント / テーマ</label>
-      <select id="entry-event">
-        <option value="default">日常の貸し借り</option>
-      </select>
-
-      <label>日付</label>
-      <input type="date" id="date">
-
-      <label>払った人</label>
-      <select id="payer">
-        <option value="A">Aさん</option>
-        <option value="B">Bさん</option>
-      </select>
-
-      <label>金額（円）</label>
-      <input type="number" id="amount" placeholder="例: 1500" inputmode="numeric">
-
-      <label>購入場所</label>
-      <input type="text" id="purchase-place" placeholder="例：スーパー、コンビニ、Amazon">
-      <div class="quick-notes" id="quick-notes"></div>
-
-      <label>購入内容</label>
-      <input type="text" id="purchase-content" placeholder="例：食料品、日用品、洗剤など">
-
-      <div class="receipt-box">
-        <label for="receipt-file">レシート画像（任意）</label>
-        <input type="file" id="receipt-file" accept="image/*" capture="environment">
-        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します。</div>
-      </div>
-
-      <label class="checkbox-label">
-        <input type="checkbox" id="auto-switch-tab" checked>
-        追加後に自動で「履歴」タブに移動する
-      </label>
-
-      <button id="add-entry-button" onclick="addEntry()">追加する</button>
-
-    </div>
-  </div>
-
-  <div id="tab-history" class="tab-content">
-    <div id="approval-container" class="card approval-card" style="display: none;">
-      <h4>⚠️ 削除の承認リクエスト</h4>
-      <div id="approval-requests-box"></div>
-    </div>
-
-    <div class="card">
-      <h3>履歴・絞り込み</h3>
-      
-      <div class="filter-group">
-        <label for="event-filter">表示中のイベント/テーマ</label>
-        <select id="event-filter" onchange="onFilterChange()">
-          <option value="all">すべてのイベント/テーマ</option>
-          <option value="unsettled">未清算の項目のみ</option>
-          <option value="settled">清算済の項目のみ</option>
-        </select>
-      </div>
-
-      <div class="filter-group">
-        <label for="month-filter">表示する期間（年・月）</label>
-        <select id="month-filter" onchange="onFilterChange()">
-          <option value="all">すべての期間</option>
-        </select>
-      </div>
-
-      <div class="filter-summary" id="filter-summary-box"></div>
-
-      <ul id="history"></ul>
-    </div>
-  </div>
-
-  <div id="tab-settings" class="tab-content">
-    <div class="card">
-      <h3>⚙️ イベント作成・管理</h3>
-
-      <label>新しいイベントを作る（旅行など）</label>
-      <div class="flex-inputs">
-        <input type="text" id="new-event-name" placeholder="例: 沖縄旅行">
-        <button onclick="addEvent()" style="width: auto; margin-top:6px; white-space:nowrap;">作成</button>
-      </div>
-
-      <label style="margin-top: 20px;">イベントの編集・削除</label>
-      <div id="event-manage-list" class="event-manage-list"></div>
-
-      <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
-
-      <label>名前の変更</label>
-      <div class="flex-inputs">
-        <div>
-          <span style="font-size:0.8em; color:#666;">Aさんの名前</span>
-          <input type="text" id="name-a-input" value="Aさん">
-        </div>
-        <div>
-          <span style="font-size:0.8em; color:#666;">Bさんの名前</span>
-          <input type="text" id="name-b-input" value="Bさん">
-        </div>
-      </div>
-
-      <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
-
-      <label>Google Apps ScriptのウェブアプリURL</label>
-      <input type="url" id="drive-upload-url" placeholder="https://script.google.com/macros/s/.../exec">
-      <label>レシート保存用の合言葉（この端末に保存）</label>
-      <input type="password" id="receipt-pin-input" placeholder="Apps Script側で設定した合言葉">
-      <p class="receipt-help">合言葉は共有データベースには保存せず、このブラウザ内に保存します。あなたと相手の端末で同じ合言葉を入力してください。</p>
-
-      <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
-
-      <div class="version-info">
-        ⚙️ システム情報（イベント編集・削除管理対応版）
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="room-info">
-        部屋コード: <strong id="room-id">--</strong>
-      </div>
-      <input type="text" id="share-url" readonly style="font-size:0.8em; color:#666;">
-      <button onclick="copyShareUrl()" style="background:#17a2b8;">相手に送るURLをコピー</button>
-    </div>
-  </div>
-
-</body>
-</html>
+        btn.type =
