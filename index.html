@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（支払・負担内訳＆絞り込み表示対応版）</title>
+  <title>ふたりの貸し借りメモ（サマリー上部移動対応版）</title>
   <!-- PDF.js読み込み -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -364,7 +364,6 @@
 
         if (isMatchEvent(item, selectedEvent)) {
           if (isMatchPeriod(item.date || '', selectedPeriod)) {
-            // 有効なデータとして集計
             if (!item.deleteRequested && !item.isSettlement) {
               if (payer === 'A') totalPaidA += amount;
               if (payer === 'B') totalPaidB += amount;
@@ -375,13 +374,13 @@
                 if (payer === 'A') netA += amount / 2;
                 else netA -= amount / 2;
               } else if (splitType === 'A_only') {
-                totalBurdenA += amount; // 全額Aの負担
-                if (payer === 'B') netA -= amount; // Bが払ったのでAはBに返す
-                else netA += amount; // Aが払った（自分負担）
+                totalBurdenA += amount; 
+                if (payer === 'B') netA -= amount; 
+                else netA += amount; 
               } else if (splitType === 'B_only') {
-                totalBurdenB += amount; // 全額Bの負担
-                if (payer === 'A') netA += amount; // Aが払ったのでBはAに返す
-                else netA -= amount; // Bが払った（自分負担）
+                totalBurdenB += amount; 
+                if (payer === 'A') netA += amount; 
+                else netA -= amount; 
               }
             }
 
@@ -429,7 +428,6 @@
       const nameA = currentSettings.nameA;
       const nameB = currentSettings.nameB;
 
-      // 現在の絞り込み条件のテキスト表記を作成
       let eventDisplayName = 'すべてのイベント/テーマ';
       if (selectedEvent === 'unsettled') eventDisplayName = '未清算の項目のみ';
       else if (selectedEvent === 'settled') eventDisplayName = '清算済の項目のみ';
@@ -441,15 +439,19 @@
         else periodDisplayName = selectedPeriod.replace('-', '年') + '月';
       }
 
+      // サマリー部分（トップ＆履歴内共通で表示内容を更新）
+      const summaryHtml = `
+        <div class="summary-title">🔍 表示中: ${escapeHtml(eventDisplayName)} / ${escapeHtml(periodDisplayName)}</div>
+        <div><span>${nameA}の支払合計:</span><span>¥${totalPaidA.toLocaleString()} (負担額: ¥${totalBurdenA.toLocaleString()})</span></div>
+        <div><span>${nameB}の支払合計:</span><span>¥${totalPaidB.toLocaleString()} (負担額: ¥${totalBurdenB.toLocaleString()})</span></div>
+        <div><span>現在の貸し借り:</span><span>${netA === 0 ? '±0円' : (netA > 0 ? `${nameB} → ${nameA} へ ¥${Math.abs(netA).toLocaleString()}` : `${nameA} → ${nameB} へ ¥${Math.abs(netA).toLocaleString()}`)}</span></div>
+      `;
+
+      const topSummaryBox = document.getElementById('top-filter-summary-box');
+      if (topSummaryBox) topSummaryBox.innerHTML = summaryHtml;
+
       const summaryBox = document.getElementById('filter-summary-box');
-      if (summaryBox) {
-        summaryBox.innerHTML = `
-          <div class="summary-title">🔍 表示中: ${escapeHtml(eventDisplayName)} / ${escapeHtml(periodDisplayName)}</div>
-          <div><span>${nameA}の支払合計:</span><span>¥${totalPaidA.toLocaleString()} (負担額: ¥${totalBurdenA.toLocaleString()})</span></div>
-          <div><span>${nameB}の支払合計:</span><span>¥${totalPaidB.toLocaleString()} (負担額: ¥${totalBurdenB.toLocaleString()})</span></div>
-          <div><span>現在の貸し借り:</span><span>${netA === 0 ? '±0円' : (netA > 0 ? `${nameB} → ${nameA} へ ¥${Math.abs(netA).toLocaleString()}` : `${nameA} → ${nameB} へ ¥${Math.abs(netA).toLocaleString()}`)}</span></div>
-        `;
-      }
+      if (summaryBox) summaryBox.innerHTML = summaryHtml;
 
       const settlementEl = document.getElementById('settlement');
       const btnSettle = document.getElementById('btn-settle');
@@ -1015,7 +1017,9 @@
     </select>
   </div>
 
+  <!-- トップのカード：青い枠のサマリーを清算ボタンの上に移動 -->
   <div class="card">
+    <div class="filter-summary" id="top-filter-summary-box" style="margin-bottom: 12px;"></div>
     <div id="settlement" class="result">読み込み中...</div>
     <button id="btn-settle" class="btn-settle" onclick="executeSettlement()"></button>
   </div>
@@ -1102,6 +1106,7 @@
         </select>
       </div>
 
+      <!-- 履歴タブ内にも残す（あるいは連動して更新） -->
       <div class="filter-summary" id="filter-summary-box"></div>
 
       <ul id="history"></ul>
@@ -1159,7 +1164,7 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（支払・負担内訳＆絞り込み表示対応版）
+        ⚙️ システム情報（サマリー上部配置版）
       </div>
     </div>
 
