@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（入力補助15個＆払った人フィルター対応版）</title>
+  <title>ふたりの貸し借りメモ（履歴PDF切り抜き対応版）</title>
   <!-- PDF.js読み込み -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -103,6 +103,8 @@
       window.history.replaceState(null, null, `?room=${roomId}`);
     }
 
+    const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbxR113FXET0PHOV_i7jNcp-FQb2gvFEI4RuDlOJIBZWWefVIMA-q82f5feGhtdniN5s/exec";
+
     window.addEventListener('DOMContentLoaded', () => {
       const roomIdEl = document.getElementById('room-id');
       if (roomIdEl) roomIdEl.innerText = roomId;
@@ -113,24 +115,31 @@
       const dateEl = document.getElementById('date');
       if (dateEl) dateEl.value = new Date().toISOString().split('T')[0];
 
+      const driveUrlEl = document.getElementById('drive-upload-url');
+      if (driveUrlEl && !driveUrlEl.value) {
+        driveUrlEl.value = DEFAULT_GAS_URL;
+      }
+
       setupFileHandlers();
     });
 
     let rawDataCache = {};
-    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all", driveUploadUrl: "" };
+    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all", driveUploadUrl: DEFAULT_GAS_URL };
     let eventsList = { "default": "日常の貸し借り" };
     let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
     let currentSettlementData = null;
 
     let selectedImageBlob = null;
     let croppedPdfDataUrl = null;
+    let activeLateReceiptItemId = null; // 履歴から追加する際の対象アイテムID
 
     onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
       const data = snapshot.val();
       if (data) currentSettings = { ...currentSettings, ...data };
+      if (!currentSettings.driveUploadUrl) currentSettings.driveUploadUrl = DEFAULT_GAS_URL;
       updateNamesUI();
       const driveUrlEl = document.getElementById('drive-upload-url');
-      if (driveUrlEl) driveUrlEl.value = currentSettings.driveUploadUrl || '';
+      if (driveUrlEl) driveUrlEl.value = currentSettings.driveUploadUrl;
     });
 
     onValue(ref(db, `rooms/${roomId}/events`), (snapshot) => {
@@ -280,7 +289,6 @@
         }
       });
 
-      // 入力補助を上位15個に拡張
       const sortedNotes = Object.keys(noteCounts)
         .sort((a, b) => noteCounts[b] - noteCounts[a])
         .slice(0, 15);
@@ -351,7 +359,6 @@
 
       const entries = Object.entries(rawDataCache).reverse();
 
-      // 全体の貸し借り計算は常に全てのデータから算出（フィルターに関わらず正しい清算額を維持するため）
       entries.forEach(([id, item]) => {
         const payer = item.payer;
         const amount = item.amount;
@@ -378,7 +385,6 @@
         }
       });
 
-      // 履歴表示用のループ
       entries.forEach(([id, item]) => {
         const payer = item.payer;
         const amount = item.amount;
@@ -404,7 +410,6 @@
           }
         }
 
-        // イベント・期間・払った人フィルターの適用
         if (isMatchEvent(item, selectedEvent) && isMatchPeriod(item.date || '', selectedPeriod) && isMatchPayer(item, selectedPayer)) {
           const isMyRequest = item.deleteRequestedBy === currentUserRole;
           const eventName = eventsList[item.eventId] || '日常の貸し借り';
@@ -433,7 +438,7 @@
             <div style="margin-top: 4px;">
               ${item.receiptUrl 
                 ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` 
-                : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*,application/pdf" style="display:none;" onchange="uploadLateReceipt('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
+                : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*,application/pdf" style="display:none;" onchange="handleLateReceiptChange('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
               }
             </div>
           `;
@@ -625,7 +630,7 @@
 
       currentSettings.nameA = (nameAInput && nameAInput.value.trim()) || 'Aさん';
       currentSettings.nameB = (nameBInput && nameBInput.value.trim()) || 'Bさん';
-      currentSettings.driveUploadUrl = driveUrlInput ? driveUrlInput.value.trim() : '';
+      currentSettings.driveUploadUrl = (driveUrlInput && driveUrlInput.value.trim()) || DEFAULT_GAS_URL;
       
       if (pinInput) {
         localStorage.setItem(`room_${roomId}_receipt_pin`, pinInput.value.trim());
@@ -644,6 +649,7 @@
         if (!file) return;
 
         if (file.type === 'application/pdf') {
+          activeLateReceiptItemId = null; // 入力画面用
           await openPdfCropModal(file);
         } else {
           selectedImageBlob = file;
@@ -767,16 +773,28 @@
       const tCtx = tempCanvas.getContext('2d');
       tCtx.drawImage(canvas, left, top, width, height, 0, 0, width, height);
 
-      croppedPdfDataUrl = tempCanvas.toDataURL('image/jpeg', 0.8);
-      selectedImageBlob = null;
+      const croppedDataUrl = tempCanvas.toDataURL('image/jpeg', 0.8);
 
-      showSelectedIndicator('PDF切り抜き画像');
       document.getElementById('pdf-modal').style.display = 'none';
+
+      if (activeLateReceiptItemId) {
+        // 履歴アイテムに対するPDF切り抜きアップロード
+        uploadCroppedImageInBackground(activeLateReceiptItemId, croppedDataUrl, 'late_pdf');
+        activeLateReceiptItemId = null;
+      } else {
+        // 入力画面用
+        croppedPdfDataUrl = croppedDataUrl;
+        selectedImageBlob = null;
+        showSelectedIndicator('PDF切り抜き画像');
+      }
     };
 
     window.cancelPdfCrop = function() {
       document.getElementById('pdf-modal').style.display = 'none';
-      document.getElementById('receipt-file').value = '';
+      if (!activeLateReceiptItemId) {
+        document.getElementById('receipt-file').value = '';
+      }
+      activeLateReceiptItemId = null;
     };
 
     window.addEntry = async function() {
@@ -832,9 +850,9 @@
         else alert('追加しました！');
 
         if (activePdfData) {
-          uploadCroppedImageInBackground(newItemId, activePdfData, date, purchasePlace);
+          uploadCroppedImageInBackground(newItemId, activePdfData, 'pdf');
         } else if (activeImageFile) {
-          uploadReceiptInBackground(newItemId, activeImageFile, date, purchasePlace);
+          uploadReceiptImageFileInBackground(newItemId, activeImageFile);
         }
 
       } catch (err) {
@@ -848,15 +866,15 @@
       }
     };
 
-    async function uploadReceiptInBackground(itemId, receiptFile, date, purchasePlace) {
+    async function uploadReceiptImageFileInBackground(itemId, imageFile) {
       try {
-        const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
+        const uploadUrl = (currentSettings.driveUploadUrl || DEFAULT_GAS_URL).trim();
         const pin = document.getElementById('receipt-pin-input')?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
         if (!uploadUrl || !pin) return;
 
-        const compressed = await compressReceiptImage(receiptFile);
+        const compressed = await compressReceiptImage(imageFile);
         const uploaded = await uploadReceiptViaFetch(uploadUrl, {
-          action: 'upload', roomId, pin, fileName: `${date}_${purchasePlace}_${Date.now()}.jpg`,
+          action: 'upload', roomId, pin, fileName: `receipt_${Date.now()}.jpg`,
           mimeType: 'image/jpeg', data: compressed.split(',')[1]
         });
 
@@ -870,49 +888,17 @@
       }
     }
 
-    async function uploadCroppedImageInBackground(itemId, dataUrl, date, purchasePlace) {
+    async function uploadCroppedImageInBackground(itemId, dataUrl, prefix) {
       try {
-        const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
+        const uploadUrl = (currentSettings.driveUploadUrl || DEFAULT_GAS_URL).trim();
         const pin = document.getElementById('receipt-pin-input')?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-        if (!uploadUrl || !pin) return;
+        if (!uploadUrl) return alert('設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
+        if (!pin) return alert('設定タブでレシート保存用の合言葉を入力してください。');
 
-        const uploaded = await uploadReceiptViaFetch(uploadUrl, {
-          action: 'upload', roomId, pin, fileName: `${date}_${purchasePlace}_pdf_${Date.now()}.jpg`,
-          mimeType: 'image/jpeg', data: dataUrl.split(',')[1]
-        });
-
-        if (uploaded.ok && uploaded.url) {
-          await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
-            receiptUrl: uploaded.url
-          });
-        }
-      } catch (e) {
-        console.warn('PDF切抜きアップロードエラー:', e);
-      }
-    }
-
-    window.uploadLateReceipt = async function(itemId) {
-      const fileInput = document.getElementById(`late-receipt-${itemId}`);
-      const file = fileInput && fileInput.files ? fileInput.files[0] : null;
-      if (!file) return;
-
-      if (file.type === 'application/pdf') {
-        alert('PDFからの追加は入力画面からの新規追加をご利用ください。');
-        return;
-      }
-
-      const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
-      const pin = document.getElementById(`receipt-pin-input`)?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-      
-      if (!uploadUrl) return alert('設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
-      if (!pin) return alert('設定タブでレシート保存用の合言葉を入力してください。');
-
-      try {
         alert('レシートのアップロードを開始します。');
-        const compressed = await compressReceiptImage(file);
         const uploaded = await uploadReceiptViaFetch(uploadUrl, {
-          action: 'upload', roomId, pin, fileName: `late_${Date.now()}.jpg`,
-          mimeType: 'image/jpeg', data: compressed.split(',')[1]
+          action: 'upload', roomId, pin, fileName: `${prefix}_${Date.now()}.jpg`,
+          mimeType: 'image/jpeg', data: dataUrl.split(',')[1]
         });
 
         if (!uploaded.ok || !uploaded.url) throw new Error(uploaded.error || 'アップロードに失敗しました');
@@ -924,6 +910,27 @@
       } catch (err) {
         alert(`レシートを追加できませんでした：${err.message}`);
       }
+    }
+
+    window.handleLateReceiptChange = async function(itemId) {
+      const fileInput = document.getElementById(`late-receipt-${itemId}`);
+      const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+      if (!file) return;
+
+      const uploadUrl = (currentSettings.driveUploadUrl || DEFAULT_GAS_URL).trim();
+      const pin = document.getElementById('receipt-pin-input')?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
+      
+      if (!uploadUrl) return alert('設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
+      if (!pin) return alert('設定タブでレシート保存用の合言葉を入力してください。');
+
+      if (file.type === 'application/pdf') {
+        activeLateReceiptItemId = itemId;
+        await openPdfCropModal(file);
+      } else {
+        await uploadReceiptImageFileInBackground(itemId, file);
+        alert('レシートを追加しました！');
+      }
+      fileInput.value = '';
     };
 
     function compressReceiptImage(file) {
@@ -1192,7 +1199,7 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（補助15個＆払った人フィルター対応版）
+        ⚙️ システム情報（履歴PDF切り抜き対応版）
       </div>
     </div>
 
