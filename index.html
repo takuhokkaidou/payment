@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（イベント選択対応・JSON通信版）</title>
+  <title>ふたりの貸し借りメモ（イベント管理対応・JSON通信版）</title>
   <style>
     body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 16px; background: #f4f6f8; color: #333; }
     .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
@@ -59,6 +59,14 @@
     .receipt-help { color: #555; font-size: 0.82em; line-height: 1.5; }
     .receipt-link { display: inline-block; margin-top: 6px; color: #075985; font-weight: bold; }
     .receipt-upload-btn { background: #17a2b8; font-size: 0.8em; padding: 4px 8px; width: auto; margin-top: 4px; display: inline-block; }
+
+    /* イベント管理用リストスタイル */
+    .event-manage-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .event-manage-item { display: flex; gap: 6px; align-items: center; background: #f8f9fa; padding: 8px; border-radius: 6px; border: 1px solid #e9ecef; }
+    .event-manage-item input { margin-top: 0; padding: 8px; font-size: 0.9em; }
+    .event-manage-item button { margin-top: 0; width: auto; padding: 8px 12px; font-size: 0.85em; white-space: nowrap; }
+    .btn-event-update { background: #28a745; }
+    .btn-event-delete { background: #dc3545; }
 
     .version-info { text-align: center; font-size: 0.8em; color: #6c757d; margin-top: 16px; padding-top: 8px; border-top: 1px dashed #ced4da; }
   </style>
@@ -145,7 +153,6 @@
     }
 
     function updateEventsUI() {
-      // 履歴・絞り込み側のセレクトボックス
       const eventFilter = document.getElementById('event-filter');
       const selectedVal = currentSettings.currentEvent;
       
@@ -155,9 +162,12 @@
         <option value="settled">清算済の項目のみ</option>
       `;
 
-      // 入力側のセレクトボックス
       const entryEventSelect = document.getElementById('entry-event');
       entryEventSelect.innerHTML = '';
+
+      // 設定タブのイベント管理リストUI
+      const manageContainer = document.getElementById('event-manage-list');
+      manageContainer.innerHTML = '';
 
       Object.entries(eventsList).forEach(([key, name]) => {
         // 絞り込み用
@@ -171,11 +181,26 @@
         opt2.value = key;
         opt2.textContent = name;
         entryEventSelect.appendChild(opt2);
+
+        // 設定タブでの管理行（default以外は編集・削除可能）
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'event-manage-item';
+        if (key === 'default') {
+          itemDiv.innerHTML = `
+            <input type="text" value="${escapeHtml(name)}" disabled style="background:#e9ecef; color:#666;">
+            <span style="font-size:0.8em; color:#666; padding:0 8px;">(基本)</span>
+          `;
+        } else {
+          itemDiv.innerHTML = `
+            <input type="text" id="event-input-${key}" value="${escapeHtml(name)}">
+            <button type="button" class="btn-event-update" onclick="updateEvent('${key}')">更新</button>
+            <button type="button" class="btn-event-delete" onclick="deleteEvent('${key}')">削除</button>
+          `;
+        }
+        manageContainer.appendChild(itemDiv);
       });
 
       eventFilter.value = selectedVal || 'all';
-      
-      // もし現在選択中のイベントがあれば入力側にも反映
       if (selectedVal && selectedVal !== 'all' && selectedVal !== 'unsettled' && selectedVal !== 'settled') {
         entryEventSelect.value = selectedVal;
       }
@@ -413,6 +438,41 @@
       alert(`イベント「${eventName}」を作成しました！`);
     };
 
+    // イベント名の更新（編集）
+    window.updateEvent = function(eventId) {
+      const inputEl = document.getElementById(`event-input-${eventId}`);
+      const newName = inputEl.value.trim();
+      if (!newName) return alert('イベント名を入力してください');
+
+      eventsList[eventId] = newName;
+      set(ref(db, `rooms/${roomId}/events`), eventsList);
+      alert('イベント名を更新しました！');
+    };
+
+    // イベントの削除
+    window.deleteEvent = function(eventId) {
+      if (!confirm(`このイベントを削除しますか？\n※削除したイベントに属していた履歴データは「日常の貸し借り」に移動します。`)) return;
+
+      // 該当イベントに紐づくアイテムの eventId を 'default' に変更する
+      Object.entries(rawDataCache).forEach(([itemId, item]) => {
+        if (item.eventId === eventId) {
+          update(ref(db, `rooms/${roomId}/items/${itemId}`), { eventId: 'default' });
+        }
+      });
+
+      // イベントリストから削除
+      delete eventsList[eventId];
+      set(ref(db, `rooms/${roomId}/events`), eventsList);
+
+      // もし現在絞り込み表示中だったら 'all' に戻す
+      if (currentSettings.currentEvent === eventId) {
+        currentSettings.currentEvent = 'all';
+        set(ref(db, `rooms/${roomId}/settings`), currentSettings);
+      }
+
+      alert('イベントを削除しました。');
+    };
+
     window.saveNames = function() {
       const nameA = document.getElementById('name-a-input').value.trim() || 'Aさん';
       const nameB = document.getElementById('name-b-input').value.trim() || 'Bさん';
@@ -433,7 +493,6 @@
       const date = document.getElementById('date').value;
       const receiptFile = document.getElementById('receipt-file').files[0];
       
-      // 入力画面で選択されたイベントIDを取得
       let eventId = document.getElementById('entry-event').value;
       if (!eventId) eventId = 'default';
 
@@ -732,13 +791,16 @@
 
   <div id="tab-settings" class="tab-content">
     <div class="card">
-      <h3>⚙️ イベント作成・設定</h3>
+      <h3>⚙️ イベント作成・管理</h3>
 
       <label>新しいイベントを作る（旅行など）</label>
       <div class="flex-inputs">
         <input type="text" id="new-event-name" placeholder="例: 沖縄旅行">
         <button onclick="addEvent()" style="width: auto; margin-top:6px; white-space:nowrap;">作成</button>
       </div>
+
+      <label style="margin-top: 20px;">イベントの編集・削除</label>
+      <div id="event-manage-list" class="event-manage-list"></div>
 
       <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
 
@@ -764,9 +826,8 @@
 
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
-      <!-- システム更新日時 -->
       <div class="version-info">
-        ⚙️ システム情報（入力時イベント選択対応版）
+        ⚙️ システム情報（イベント編集・削除管理対応版）
       </div>
     </div>
 
