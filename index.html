@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（イベントプルダウン管理対応・JSON通信版）</title>
+  <title>ふたりの貸し借りメモ（修正版・JSON通信）</title>
   <style>
     body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 16px; background: #f4f6f8; color: #333; }
     .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
@@ -91,12 +91,17 @@
       window.history.replaceState(null, null, `?room=${roomId}`);
     }
 
-    document.getElementById('room-id').innerText = roomId;
-    document.getElementById('share-url').value = window.location.href;
-    document.getElementById('receipt-pin-input').value = localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-
-    const today = new Date().toISOString().split('T')[0];
-    document.getElementById('date').value = today;
+    // DOM読み込み完了後に初期値をセット
+    window.addEventListener('DOMContentLoaded', () => {
+      const roomIdEl = document.getElementById('room-id');
+      if (roomIdEl) roomIdEl.innerText = roomId;
+      const shareUrlEl = document.getElementById('share-url');
+      if (shareUrlEl) shareUrlEl.value = window.location.href;
+      const pinInputEl = document.getElementById('receipt-pin-input');
+      if (pinInputEl) pinInputEl.value = localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
+      const dateEl = document.getElementById('date');
+      if (dateEl) dateEl.value = new Date().toISOString().split('T')[0];
+    });
 
     let rawDataCache = {};
     let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all", driveUploadUrl: "" };
@@ -108,7 +113,8 @@
       const data = snapshot.val();
       if (data) currentSettings = { ...currentSettings, ...data };
       updateNamesUI();
-      document.getElementById('drive-upload-url').value = currentSettings.driveUploadUrl || '';
+      const driveUrlEl = document.getElementById('drive-upload-url');
+      if (driveUrlEl) driveUrlEl.value = currentSettings.driveUploadUrl || '';
     });
 
     onValue(ref(db, `rooms/${roomId}/events`), (snapshot) => {
@@ -125,29 +131,43 @@
     });
 
     window.updateUserRole = function() {
-      currentUserRole = document.getElementById('my-role').value;
-      localStorage.setItem(`room_${roomId}_role`, currentUserRole);
-      renderApp();
+      const roleSelect = document.getElementById('my-role');
+      if (roleSelect) {
+        currentUserRole = roleSelect.value;
+        localStorage.setItem(`room_${roomId}_role`, currentUserRole);
+        renderApp();
+      }
     };
 
     function updateNamesUI() {
-      document.getElementById('name-a-input').value = currentSettings.nameA;
-      document.getElementById('name-b-input').value = currentSettings.nameB;
+      const nameAInput = document.getElementById('name-a-input');
+      const nameBInput = document.getElementById('name-b-input');
+      if (nameAInput) nameAInput.value = currentSettings.nameA;
+      if (nameBInput) nameBInput.value = currentSettings.nameB;
 
       const payerSelect = document.getElementById('payer');
-      payerSelect.options[0].text = currentSettings.nameA;
-      payerSelect.options[1].text = currentSettings.nameB;
+      if (payerSelect && payerSelect.options.length >= 2) {
+        payerSelect.options[0].text = currentSettings.nameA;
+        payerSelect.options[1].text = currentSettings.nameB;
+      }
 
       const roleSelect = document.getElementById('my-role');
-      roleSelect.options[0].text = currentSettings.nameA;
-      roleSelect.options[1].text = currentSettings.nameB;
-      roleSelect.value = currentUserRole;
+      if (roleSelect && roleSelect.options.length >= 2) {
+        roleSelect.options[0].text = currentSettings.nameA;
+        roleSelect.options[1].text = currentSettings.nameB;
+        roleSelect.value = currentUserRole;
+      }
 
       renderApp();
     }
 
     function updateEventsUI() {
       const eventFilter = document.getElementById('event-filter');
+      const entryEventSelect = document.getElementById('entry-event');
+      const manageSelect = document.getElementById('manage-event-select');
+      
+      if (!eventFilter || !entryEventSelect || !manageSelect) return;
+
       const selectedVal = currentSettings.currentEvent;
       
       eventFilter.innerHTML = `
@@ -157,23 +177,18 @@
         <option disabled>------------------------</option>
       `;
 
-      const entryEventSelect = document.getElementById('entry-event');
       entryEventSelect.innerHTML = '';
-
-      const manageSelect = document.getElementById('manage-event-select');
       manageSelect.innerHTML = '';
 
       let hasCustomEvents = false;
       const customEventsHtml = [];
 
       Object.entries(eventsList).forEach(([key, name]) => {
-        // 入力用
         const opt2 = document.createElement('option');
         opt2.value = key;
         opt2.textContent = name;
         entryEventSelect.appendChild(opt2);
 
-        // 管理プルダウン用
         const optManage = document.createElement('option');
         optManage.value = key;
         optManage.textContent = name;
@@ -206,20 +221,19 @@
         entryEventSelect.value = selectedVal;
       }
 
-      // 管理セレクトボックスが変更されたときに下の入力欄を連動させる
       onManageEventChange();
     }
 
-    // 管理プルダウンで選択されたイベント名をテキストボックスに反映
     window.onManageEventChange = function() {
       const select = document.getElementById('manage-event-select');
-      const selectedKey = select.value;
       const nameInput = document.getElementById('manage-event-name-input');
       const deleteBtn = document.getElementById('btn-delete-event');
+      
+      if (!select || !nameInput || !deleteBtn) return;
 
+      const selectedKey = select.value;
       if (selectedKey && eventsList[selectedKey]) {
         nameInput.value = eventsList[selectedKey];
-        // デフォルト（日常の貸し借り）は削除ボタンを非表示にする
         if (selectedKey === 'default') {
           deleteBtn.style.display = 'none';
         } else {
@@ -242,6 +256,7 @@
         .slice(0, 5);
 
       const quickNotesContainer = document.getElementById('quick-notes');
+      if (!quickNotesContainer) return;
       quickNotesContainer.innerHTML = '';
 
       sortedNotes.forEach(note => {
@@ -249,7 +264,7 @@
         btn.className = 'note-btn';
         btn.type = 'button';
         btn.textContent = note;
-        btn.onclick = () => { document.getElementById('purchase-place').value = note; };
+        btn.onclick = () => { const el = document.getElementById('purchase-place'); if(el) el.value = note; };
         quickNotesContainer.appendChild(btn);
       });
     }
@@ -277,13 +292,18 @@
     }
 
     function renderApp() {
-      const selectedPeriod = document.getElementById('month-filter').value;
-      const selectedEvent = document.getElementById('event-filter').value;
+      const monthFilter = document.getElementById('month-filter');
+      const eventFilter = document.getElementById('event-filter');
+      const historyList = document.getElementById('history');
+      const approvalBox = document.getElementById('approval-requests-box');
+      
+      if (!monthFilter || !eventFilter || !historyList || !approvalBox) return;
+
+      const selectedPeriod = monthFilter.value;
+      const selectedEvent = eventFilter.value;
 
       let totalA = 0;
       let totalB = 0;
-      const historyList = document.getElementById('history');
-      const approvalBox = document.getElementById('approval-requests-box');
       
       historyList.innerHTML = '';
       approvalBox.innerHTML = '';
@@ -353,7 +373,7 @@
       });
 
       const approvalContainer = document.getElementById('approval-container');
-      approvalContainer.style.display = pendingCount > 0 ? 'block' : 'none';
+      if (approvalContainer) approvalContainer.style.display = pendingCount > 0 ? 'block' : 'none';
 
       updatePeriodOptions(entries, selectedEvent, selectedPeriod);
 
@@ -361,50 +381,57 @@
       const nameB = currentSettings.nameB;
       const filteredTotal = totalA + totalB;
 
-      document.getElementById('filter-summary-box').innerHTML = `
-        <div><span>${nameA}の支払額:</span><span>¥${totalA.toLocaleString()}</span></div>
-        <div><span>${nameB}の支払額:</span><span>¥${totalB.toLocaleString()}</span></div>
-        <div><span>絞り込み合計:</span><span>¥${filteredTotal.toLocaleString()}</span></div>
-      `;
+      const summaryBox = document.getElementById('filter-summary-box');
+      if (summaryBox) {
+        summaryBox.innerHTML = `
+          <div><span>${nameA}の支払額:</span><span>¥${totalA.toLocaleString()}</span></div>
+          <div><span>${nameB}の支払額:</span><span>¥${totalB.toLocaleString()}</span></div>
+          <div><span>絞り込み合計:</span><span>¥${filteredTotal.toLocaleString()}</span></div>
+        `;
+      }
 
       const diff = totalA - totalB;
       const settlementEl = document.getElementById('settlement');
       const btnSettle = document.getElementById('btn-settle');
 
-      if (diff === 0) {
-        settlementEl.innerText = "貸し借りは現在ありません 👏";
-        btnSettle.style.display = 'none';
-        currentSettlementData = null;
-      } else {
-        const settleAmount = Math.abs(diff) / 2;
-        const totalAmountToLog = Math.abs(diff);
-        let payer, payerName, receiverName;
-
-        if (diff > 0) {
-          payer = 'B';
-          payerName = nameB;
-          receiverName = nameA;
+      if (settlementEl && btnSettle) {
+        if (diff === 0) {
+          settlementEl.innerText = "貸し借りは現在ありません 👏";
+          btnSettle.style.display = 'none';
+          currentSettlementData = null;
         } else {
-          payer = 'A';
-          payerName = nameA;
-          receiverName = nameB;
-        }
+          const settleAmount = Math.abs(diff) / 2;
+          const totalAmountToLog = Math.abs(diff);
+          let payer, payerName, receiverName;
 
-        settlementEl.innerText = `${payerName} → ${receiverName} へ ¥${settleAmount.toLocaleString()} 支払う`;
-        
-        btnSettle.style.display = 'block';
-        btnSettle.innerText = `🧹 ${payerName} が清算 (¥${settleAmount.toLocaleString()}) を記録する`;
-        currentSettlementData = {
-          payer: payer,
-          totalAmount: totalAmountToLog,
-          displayAmount: settleAmount,
-          payerName: payerName
-        };
+          if (diff > 0) {
+            payer = 'B';
+            payerName = nameB;
+            receiverName = nameA;
+          } else {
+            payer = 'A';
+            payerName = nameA;
+            receiverName = nameB;
+          }
+
+          settlementEl.innerText = `${payerName} → ${receiverName} へ ¥${settleAmount.toLocaleString()} 支払う`;
+          
+          btnSettle.style.display = 'block';
+          btnSettle.innerText = `🧹 ${payerName} が清算 (¥${settleAmount.toLocaleString()}) を記録する`;
+          currentSettlementData = {
+            payer: payer,
+            totalAmount: totalAmountToLog,
+            displayAmount: settleAmount,
+            payerName: payerName
+          };
+        }
       }
     }
 
     function updatePeriodOptions(entries, selectedEvent, currentSelected) {
       const filterSelect = document.getElementById('month-filter');
+      if (!filterSelect) return;
+
       const years = new Set();
       const months = new Set();
 
@@ -440,12 +467,15 @@
       document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
 
-      document.getElementById(`tab-btn-${tabName}`).classList.add('active');
-      document.getElementById(`tab-${tabName}`).classList.add('active');
+      const btn = document.getElementById(`tab-btn-${tabName}`);
+      const content = document.getElementById(`tab-${tabName}`);
+      if (btn) btn.classList.add('active');
+      if (content) content.classList.add('active');
     };
 
     window.addEvent = function() {
       const nameInput = document.getElementById('new-event-name');
+      if (!nameInput) return;
       const eventName = nameInput.value.trim();
       if (!eventName) return alert('イベント名を入力してください');
 
@@ -460,11 +490,12 @@
       alert(`イベント「${eventName}」を作成しました！`);
     };
 
-    // 選択中のイベント名を更新（編集）
     window.updateSelectedEvent = function() {
       const select = document.getElementById('manage-event-select');
-      const eventId = select.value;
       const inputEl = document.getElementById('manage-event-name-input');
+      if (!select || !inputEl) return;
+
+      const eventId = select.value;
       const newName = inputEl.value.trim();
       if (!eventId) return alert('編集するイベントを選択してください');
       if (!newName) return alert('イベント名を入力してください');
@@ -474,9 +505,10 @@
       alert('イベント名を更新しました！');
     };
 
-    // 選択中のイベントを削除
     window.deleteSelectedEvent = function() {
       const select = document.getElementById('manage-event-select');
+      if (!select) return;
+
       const eventId = select.value;
       if (!eventId || eventId === 'default') return alert('削除できない項目です');
 
@@ -501,34 +533,49 @@
     };
 
     window.saveNames = function() {
-      const nameA = document.getElementById('name-a-input').value.trim() || 'Aさん';
-      const nameB = document.getElementById('name-b-input').value.trim() || 'Bさん';
-      const driveUploadUrl = document.getElementById('drive-upload-url').value.trim();
-      currentSettings.nameA = nameA;
-      currentSettings.nameB = nameB;
-      currentSettings.driveUploadUrl = driveUploadUrl;
-      localStorage.setItem(`room_${roomId}_receipt_pin`, document.getElementById('receipt-pin-input').value.trim());
+      const nameAInput = document.getElementById('name-a-input');
+      const nameBInput = document.getElementById('name-b-input');
+      const driveUrlInput = document.getElementById('drive-upload-url');
+      const pinInput = document.getElementById('receipt-pin-input');
+
+      currentSettings.nameA = (nameAInput && nameAInput.value.trim()) || 'Aさん';
+      currentSettings.nameB = (nameBInput && nameBInput.value.trim()) || 'Bさん';
+      currentSettings.driveUploadUrl = driveUrlInput ? driveUrlInput.value.trim() : '';
+      
+      if (pinInput) {
+        localStorage.setItem(`room_${roomId}_receipt_pin`, pinInput.value.trim());
+      }
+      
       set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-      alert('設定を保存しました。アップロード用の合言葉はこの端末にのみ保存しました。');
+      alert('設定を保存しました。');
     };
 
     window.addEntry = async function() {
-      const payer = document.getElementById('payer').value;
-      const amount = Number(document.getElementById('amount').value);
-      const purchasePlace = document.getElementById('purchase-place').value.trim() || '場所未入力';
-      const purchaseContent = document.getElementById('purchase-content').value.trim();
-      const date = document.getElementById('date').value;
-      const receiptFile = document.getElementById('receipt-file').files[0];
-      
-      let eventId = document.getElementById('entry-event').value;
-      if (!eventId) eventId = 'default';
+      const payerEl = document.getElementById('payer');
+      const amountEl = document.getElementById('amount');
+      const placeEl = document.getElementById('purchase-place');
+      const contentEl = document.getElementById('purchase-content');
+      const dateEl = document.getElementById('date');
+      const fileEl = document.getElementById('receipt-file');
+      const entryEventEl = document.getElementById('entry-event');
+      const autoSwitchEl = document.getElementById('auto-switch-tab');
 
-      const autoSwitch = document.getElementById('auto-switch-tab').checked;
+      const payer = payerEl ? payerEl.value : 'A';
+      const amount = amountEl ? Number(amountEl.value) : 0;
+      const purchasePlace = (placeEl && placeEl.value.trim()) || '場所未入力';
+      const purchaseContent = (contentEl && contentEl.value.trim()) || '';
+      const date = (dateEl && dateEl.value) || new Date().toISOString().split('T')[0];
+      const receiptFile = fileEl && fileEl.files ? fileEl.files[0] : null;
+      let eventId = (entryEventEl && entryEventEl.value) || 'default';
+      const autoSwitch = autoSwitchEl ? autoSwitchEl.checked : true;
+
       if (!amount || amount < 0) return alert('金額を正しく入力してください');
 
       const addButton = document.getElementById('add-entry-button');
-      addButton.disabled = true;
-      addButton.textContent = 'データを保存中…';
+      if (addButton) {
+        addButton.disabled = true;
+        addButton.textContent = 'データを保存中…';
+      }
 
       try {
         const itemRef = push(ref(db, `rooms/${roomId}/items`));
@@ -539,11 +586,10 @@
           date, eventId, timestamp: Date.now(), deleteRequested: false, isSettlement: false
         });
 
-        document.getElementById('amount').value = '';
-        document.getElementById('purchase-place').value = '';
-        document.getElementById('purchase-content').value = '';
-        document.getElementById('receipt-file').value = '';
-        document.getElementById('date').value = today;
+        if (amountEl) amountEl.value = '';
+        if (placeEl) placeEl.value = '';
+        if (contentEl) contentEl.value = '';
+        if (fileEl) fileEl.value = '';
 
         if (autoSwitch) switchTab('history');
         else alert('追加しました！');
@@ -556,15 +602,17 @@
         console.error(err);
         alert(`登録できませんでした：${err.message || err}`);
       } finally {
-        addButton.disabled = false;
-        addButton.textContent = '追加する';
+        if (addButton) {
+          addButton.disabled = false;
+          addButton.textContent = '追加する';
+        }
       }
     };
 
     async function uploadReceiptInBackground(itemId, receiptFile, date, purchasePlace) {
       try {
         const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
-        const pin = document.getElementById('receipt-pin-input').value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
+        const pin = document.getElementById('receipt-pin-input')?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
         if (!uploadUrl || !pin) return;
 
         const compressed = await compressReceiptImage(receiptFile);
@@ -582,26 +630,19 @@
         }
       } catch (e) {
         console.warn('レシート画像のバックグラウンドアップロードに失敗しました:', e);
-        alert(`⚠️ レシートの紐づけ中にエラーが発生しました: ${e.message || e}`);
       }
     }
 
     window.uploadLateReceipt = async function(itemId) {
       const fileInput = document.getElementById(`late-receipt-${itemId}`);
-      const file = fileInput.files[0];
+      const file = fileInput && fileInput.files ? fileInput.files[0] : null;
       if (!file) return;
 
       const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
       const pin = document.getElementById(`receipt-pin-input`)?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
       
-      if (!uploadUrl) {
-        alert('設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
-        return;
-      }
-      if (!pin) {
-        alert('設定タブでレシート保存用の合言葉を入力してください。');
-        return;
-      }
+      if (!uploadUrl) return alert('設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
+      if (!pin) return alert('設定タブでレシート保存用の合言葉を入力してください。');
 
       try {
         alert('レシートのアップロードを開始します。');
@@ -666,14 +707,15 @@
       
       if (confirm(`${payerName}さんが ¥${displayAmount.toLocaleString()} を支払い、貸し借りを清算（リセット）します。よろしいですか？`)) {
         
-        let eventId = document.getElementById('entry-event').value || 'default';
+        let eventId = document.getElementById('entry-event')?.value || 'default';
+        const todayStr = new Date().toISOString().split('T')[0];
 
         push(ref(db, `rooms/${roomId}/items`), {
           payer: payer,
           amount: totalAmount,
           note: `清算（¥${displayAmount.toLocaleString()} 支払い）`,
           purchasePlace: '清算', purchaseContent: `¥${displayAmount.toLocaleString()} 支払い`, receiptUrl: '',
-          date: today,
+          date: todayStr,
           eventId: eventId,
           timestamp: Date.now(),
           deleteRequested: false,
@@ -705,15 +747,20 @@
     };
 
     window.onFilterChange = function() {
-      currentSettings.currentEvent = document.getElementById('event-filter').value;
-      set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-      renderApp();
+      const eventFilter = document.getElementById('event-filter');
+      if (eventFilter) {
+        currentSettings.currentEvent = eventFilter.value;
+        set(ref(db, `rooms/${roomId}/settings`), currentSettings);
+        renderApp();
+      }
     };
 
     window.copyShareUrl = function() {
       const copyText = document.getElementById('share-url');
-      navigator.clipboard.writeText(copyText.value);
-      alert('共有用URLをコピーしました！LINEなどで相手に送信してください。');
+      if (copyText) {
+        navigator.clipboard.writeText(copyText.value);
+        alert('共有用URLをコピーしました！LINEなどで相手に送信してください。');
+      }
     };
   </script>
 </head>
@@ -867,7 +914,7 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（イベントプルダウン管理対応版）
+        ⚙️ システム情報（描画エラー防止修正版）
       </div>
     </div>
 
