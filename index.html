@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（写真＆PDF切り抜き対応版）</title>
+  <title>ふたりの貸し借りメモ（部屋入室モーダル対応版）</title>
   <!-- PDF.js読み込み -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -68,8 +68,9 @@
 
     .event-manage-box { background: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #e9ecef; margin-top: 6px; }
 
-    #pdf-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; overflow: auto; padding: 16px; box-sizing: border-box; }
-    .modal-content { background: white; max-width: 450px; margin: 20px auto; padding: 16px; border-radius: 12px; text-align: center; }
+    /* モーダル表示スタイル */
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; overflow: auto; padding: 16px; box-sizing: border-box; }
+    .modal-content { background: white; max-width: 450px; margin: 20px auto; padding: 20px; border-radius: 12px; text-align: center; }
     #pdf-canvas-container { position: relative; display: inline-block; cursor: crosshair; max-width: 100%; overflow: hidden; border: 1px solid #ccc; }
     #pdf-canvas { display: block; max-width: 100%; height: auto; }
     #crop-box { position: absolute; border: 2px dashed #007bff; background: rgba(0, 123, 255, 0.2); display: none; pointer-events: none; }
@@ -96,16 +97,71 @@
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    const urlParams = new URLSearchParams(window.location.search);
-    let roomId = urlParams.get('room');
-    if (!roomId) {
-      roomId = Math.random().toString(36).substring(2, 8);
-      window.history.replaceState(null, null, `?room=${roomId}`);
-    }
-
     const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbxR113FXET0PHOV_i7jNcp-FQb2gvFEI4RuDlOJIBZWWefVIMA-q82f5feGhtdniN5s/exec";
 
+    let roomId = null;
+    let rawDataCache = {};
+    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all", driveUploadUrl: DEFAULT_GAS_URL };
+    let eventsList = { "default": "日常の貸し借り" };
+    let currentUserRole = 'A';
+    let currentSettlementData = null;
+
+    let croppedImageDataUrl = null;
+    let activeLateReceiptItemId = null;
+
+    let unsubscribeSettings = null;
+    let unsubscribeEvents = null;
+    let unsubscribeItems = null;
+
     window.addEventListener('DOMContentLoaded', () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      roomId = urlParams.get('room');
+
+      if (!roomId) {
+        showRoomSelectModal();
+      } else {
+        initRoom(roomId);
+      }
+
+      setupFileHandlers();
+    });
+
+    // 部屋選択モーダルの表示制御
+    function showRoomSelectModal() {
+      const modal = document.getElementById('room-select-modal');
+      if (modal) modal.style.display = 'block';
+    }
+
+    window.createNewRoom = function() {
+      const newRoomId = Math.random().toString(36).substring(2, 8);
+      document.getElementById('room-select-modal').style.display = 'none';
+      switchRoom(newRoomId);
+    };
+
+    window.joinExistingRoom = function() {
+      const inputEl = document.getElementById('input-room-code');
+      const code = (inputEl ? inputEl.value.trim() : '').toLowerCase();
+      if (!code) return alert('部屋コードを入力してください');
+      if (code.length < 3) return alert('正しい部屋コードを入力してください');
+
+      document.getElementById('room-select-modal').style.display = 'none';
+      switchRoom(code);
+    };
+
+    window.openChangeRoomModal = function() {
+      showRoomSelectModal();
+    };
+
+    function switchRoom(targetRoomId) {
+      roomId = targetRoomId;
+      window.history.replaceState(null, null, `?room=${roomId}`);
+      initRoom(roomId);
+    }
+
+    function initRoom(targetRoomId) {
+      roomId = targetRoomId;
+      currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
+
       const roomIdEl = document.getElementById('room-id');
       if (roomIdEl) roomIdEl.innerText = roomId;
       const shareUrlEl = document.getElementById('share-url');
@@ -120,39 +176,34 @@
         driveUrlEl.value = DEFAULT_GAS_URL;
       }
 
-      setupFileHandlers();
-    });
+      // 既存のリスカスタムイベント解除
+      if (unsubscribeSettings) unsubscribeSettings();
+      if (unsubscribeEvents) unsubscribeEvents();
+      if (unsubscribeItems) unsubscribeItems();
 
-    let rawDataCache = {};
-    let currentSettings = { nameA: "Aさん", nameB: "Bさん", currentEvent: "all", driveUploadUrl: DEFAULT_GAS_URL };
-    let eventsList = { "default": "日常の貸し借り" };
-    let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
-    let currentSettlementData = null;
+      // Firebaseリスナーの接続
+      unsubscribeSettings = onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
+        const data = snapshot.val();
+        if (data) currentSettings = { ...currentSettings, ...data };
+        if (!currentSettings.driveUploadUrl) currentSettings.driveUploadUrl = DEFAULT_GAS_URL;
+        updateNamesUI();
+        const driveUrlEl = document.getElementById('drive-upload-url');
+        if (driveUrlEl) driveUrlEl.value = currentSettings.driveUploadUrl;
+      });
 
-    let croppedImageDataUrl = null; // 切り抜き後の画像データ
-    let activeLateReceiptItemId = null; // 履歴から追加する際の対象アイテムID
+      unsubscribeEvents = onValue(ref(db, `rooms/${roomId}/events`), (snapshot) => {
+        const data = snapshot.val();
+        eventsList = data || { "default": "日常の貸し借り" };
+        updateEventsUI();
+        renderApp();
+      });
 
-    onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
-      const data = snapshot.val();
-      if (data) currentSettings = { ...currentSettings, ...data };
-      if (!currentSettings.driveUploadUrl) currentSettings.driveUploadUrl = DEFAULT_GAS_URL;
-      updateNamesUI();
-      const driveUrlEl = document.getElementById('drive-upload-url');
-      if (driveUrlEl) driveUrlEl.value = currentSettings.driveUploadUrl;
-    });
-
-    onValue(ref(db, `rooms/${roomId}/events`), (snapshot) => {
-      const data = snapshot.val();
-      if (data) eventsList = data;
-      updateEventsUI();
-      renderApp();
-    });
-
-    onValue(ref(db, `rooms/${roomId}/items`), (snapshot) => {
-      rawDataCache = snapshot.val() || {};
-      renderApp();
-      updateQuickNotes();
-    });
+      unsubscribeItems = onValue(ref(db, `rooms/${roomId}/items`), (snapshot) => {
+        rawDataCache = snapshot.val() || {};
+        renderApp();
+        updateQuickNotes();
+      });
+    }
 
     window.updateUserRole = function() {
       const roleSelect = document.getElementById('my-role');
@@ -437,7 +488,7 @@
             <div style="margin-top: 4px;">
               ${item.receiptUrl 
                 ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` 
-                : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*,application/pdf" style="display:none;" onchange="handleFileSelect('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
+                : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <button type="button" class="receipt-upload-btn" onclick="handleLateReceiptChange('${id}')">➕ レシートを追加</button>`
               }
             </div>
           `;
@@ -647,7 +698,7 @@
         const file = e.target.files[0];
         if (!file) return;
 
-        activeLateReceiptItemId = null; // 入力画面用
+        activeLateReceiptItemId = null;
         if (file.type === 'application/pdf') {
           await openPdfCropModal(file);
         } else {
@@ -667,7 +718,6 @@
       ind.textContent = `選択中: ${text}`;
     }
 
-    // PDFまたは通常の画像をキャンバスに読み込んで切り抜きモーダルを開く
     async function openPdfCropModal(pdfFile) {
       const modal = document.getElementById('pdf-modal');
       modal.style.display = 'block';
@@ -699,7 +749,6 @@
           const canvas = document.getElementById('pdf-canvas');
           const context = canvas.getContext('2d');
           
-          // 最大幅制限を持たせて高画質すぎないように描画
           const maxSide = 1200;
           const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
           canvas.width = Math.round(img.width * scale);
@@ -786,7 +835,6 @@
       const width = parseFloat(cropBox.style.width) * scaleX;
       const height = parseFloat(cropBox.style.height) * scaleY;
 
-      // 範囲が指定されなかった場合はキャンバス全体を切り抜き対象とする
       let finalCanvas = canvas;
       if (width >= 10 && height >= 10) {
         const tempCanvas = document.createElement('canvas');
@@ -797,16 +845,14 @@
         finalCanvas = tempCanvas;
       }
 
-      croppedImageDataUrl = finalCanvas.toDataURL('image/jpeg', 0.6); // 圧縮率0.6で軽量化
+      croppedImageDataUrl = finalCanvas.toDataURL('image/jpeg', 0.6);
 
       document.getElementById('pdf-modal').style.display = 'none';
 
       if (activeLateReceiptItemId) {
-        // 履歴アイテムに対する切り抜きアップロード
         uploadCroppedImageInBackground(activeLateReceiptItemId, croppedImageDataUrl);
         activeLateReceiptItemId = null;
       } else {
-        // 入力画面用
         showSelectedIndicator('切り抜き済み画像（軽量化完了）');
       }
     };
@@ -908,17 +954,29 @@
       }
     }
 
-    window.handleFileSelectForHistory = async function(itemId, inputEl) {
-      const file = inputEl.files ? inputEl.files[0] : null;
-      if (!file) return;
-
-      activeLateReceiptItemId = itemId;
-      if (file.type === 'application/pdf') {
-        await openPdfCropModal(file);
-      } else {
-        await openImageCropModal(file);
+    window.handleLateReceiptChange = function(itemId) {
+      let fileInput = document.getElementById(`late-receipt-input-temp`);
+      if (!fileInput) {
+        fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.id = 'late-receipt-input-temp';
+        fileInput.accept = 'image/*,application/pdf';
+        fileInput.style.display = 'none';
+        document.body.appendChild(fileInput);
       }
-      inputEl.value = '';
+      fileInput.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        activeLateReceiptItemId = itemId;
+        if (file.type === 'application/pdf') {
+          await openPdfCropModal(file);
+        } else {
+          await openImageCropModal(file);
+        }
+        fileInput.value = '';
+      };
+      fileInput.click();
     };
 
     async function uploadReceiptViaFetch(url, payload) {
@@ -1105,7 +1163,6 @@
         </select>
       </div>
 
-      <!-- 履歴タブ内サマリー -->
       <div class="filter-summary" id="filter-summary-box"></div>
 
       <ul id="history"></ul>
@@ -1163,7 +1220,7 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（写真＆PDF切り抜き軽量化対応版）
+        ⚙️ システム情報（部屋入室モーダル対応版）
       </div>
     </div>
 
@@ -1172,12 +1229,29 @@
         部屋コード: <strong id="room-id">----</strong>
       </div>
       <input type="text" id="share-url" readonly style="font-size:0.8em; color:#666;">
-      <button onclick="copyShareUrl()" style="background:#17a2b8;">相手に送るURLをコピー</button>
+      <button onclick="copyShareUrl()" style="background:#17a2b8; margin-bottom: 8px;">相手に送るURLをコピー</button>
+      <button onclick="openChangeRoomModal()" style="background:#6c757d;">別の部屋に移動 / 部屋を作成</button>
+    </div>
+  </div>
+
+  <!-- 初回・部屋選択モーダル -->
+  <div id="room-select-modal" class="modal-overlay">
+    <div class="modal-content">
+      <h3 style="margin-bottom: 16px;">🏠 ふたりの貸し借りメモ</h3>
+      <p style="font-size:0.9em; color:#555; margin-bottom: 20px;">はじめに利用する部屋を選択してください。</p>
+      
+      <button onclick="createNewRoom()" style="background:#28a745; font-size:1.1em; padding:14px; margin-bottom:16px;">✨ 新しい部屋を作成する</button>
+
+      <hr style="margin: 20px 0; border: none; border-top: 1px dashed #ccc;">
+
+      <label style="text-align: left; margin-bottom: 4px;">既存の部屋コードを入力</label>
+      <input type="text" id="input-room-code" placeholder="例: abc123" style="text-align:center; font-size:1.1em; letter-spacing:1px;">
+      <button onclick="joinExistingRoom()" style="background:#007bff; font-size:1em; padding:12px;">部屋に入室する</button>
     </div>
   </div>
 
   <!-- 範囲選択（切り抜き）モーダル -->
-  <div id="pdf-modal">
+  <div id="pdf-modal" class="modal-overlay">
     <div class="modal-content">
       <h3>レシートの切り抜き</h3>
       <p style="font-size:0.85em; color:#666;">レシート部分をマウス（または指）でドラッグして囲んでください。</p>
@@ -1192,24 +1266,5 @@
     </div>
   </div>
 
-  <!-- 履歴用の隠しファイルinput動的生成補完用 -->
-  <div style="display:none;" id="hidden-inputs-container"></div>
-  
-  <script>
-    // 履歴アイテムごとのファイル選択を捕捉するためのハンドラ
-    window.handleLateReceiptChange = function(itemId) {
-      let fileInput = document.getElementById(`late-receipt-${itemId}`);
-      if (!fileInput) {
-        fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.id = `late-receipt-${itemId}`;
-        fileInput.accept = 'image/*,application/pdf';
-        fileInput.style.display = 'none';
-        fileInput.onchange = (e) => handleFileSelectForHistory(itemId, fileInput);
-        document.body.appendChild(fileInput);
-      }
-      fileInput.click();
-    };
-  </script>
 </body>
 </html>
