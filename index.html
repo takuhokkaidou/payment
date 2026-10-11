@@ -3,7 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（修正版・JSON通信）</title>
+  <title>ふたりの貸し借りメモ（PDF範囲選択・画像変換対応版）</title>
+  <!-- PDF.js読み込み -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  </script>
   <style>
     body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 16px; background: #f4f6f8; color: #333; }
     .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; }
@@ -62,6 +67,13 @@
 
     .event-manage-box { background: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #e9ecef; margin-top: 6px; }
 
+    /* PDFトリミングモーダル用スタイル */
+    #pdf-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; overflow: auto; padding: 16px; box-sizing: border-box; }
+    .modal-content { background: white; max-width: 450px; margin: 20px auto; padding: 16px; border-radius: 12px; text-align: center; }
+    #pdf-canvas-container { position: relative; display: inline-block; cursor: crosshair; max-width: 100%; overflow: hidden; border: 1px solid #ccc; }
+    #pdf-canvas { display: block; max-width: 100%; height: auto; }
+    #crop-box { position: absolute; border: 2px dashed #007bff; background: rgba(0, 123, 255, 0.2); display: none; pointer-events: none; }
+
     .version-info { text-align: center; font-size: 0.8em; color: #6c757d; margin-top: 16px; padding-top: 8px; border-top: 1px dashed #ced4da; }
   </style>
 
@@ -91,7 +103,6 @@
       window.history.replaceState(null, null, `?room=${roomId}`);
     }
 
-    // DOM読み込み完了後に初期値をセット
     window.addEventListener('DOMContentLoaded', () => {
       const roomIdEl = document.getElementById('room-id');
       if (roomIdEl) roomIdEl.innerText = roomId;
@@ -101,6 +112,8 @@
       if (pinInputEl) pinInputEl.value = localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
       const dateEl = document.getElementById('date');
       if (dateEl) dateEl.value = new Date().toISOString().split('T')[0];
+
+      setupFileHandlers();
     });
 
     let rawDataCache = {};
@@ -108,6 +121,10 @@
     let eventsList = { "default": "日常の貸し借り" };
     let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
     let currentSettlementData = null;
+
+    // 保管用ファイル（通常画像またはトリミング済みPDF画像）
+    let selectedImageBlob = null;
+    let croppedPdfDataUrl = null;
 
     onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
       const data = snapshot.val();
@@ -363,7 +380,7 @@
               <div style="margin-top: 4px;">
                 ${item.receiptUrl 
                   ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` 
-                  : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*" style="display:none;" onchange="uploadLateReceipt('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
+                  : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*,application/pdf" style="display:none;" onchange="uploadLateReceipt('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
                 }
               </div>
             `;
@@ -550,13 +567,160 @@
       alert('設定を保存しました。');
     };
 
+    // --- ファイル入力およびPDFトリミングの処理 ---
+    function setupFileHandlers() {
+      const fileInput = document.getElementById('receipt-file');
+      if (!fileInput) return;
+
+      fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (file.type === 'application/pdf') {
+          // PDFの場合はモーダルを表示してトリミング処理へ
+          await openPdfCropModal(file);
+        } else {
+          // 通常の画像
+          selectedImageBlob = file;
+          croppedPdfDataUrl = null;
+          showSelectedIndicator(file.name);
+        }
+      });
+    }
+
+    function showSelectedIndicator(text) {
+      let ind = document.getElementById('selected-file-indicator');
+      if (!ind) {
+        ind = document.createElement('div');
+        ind.id = 'selected-file-indicator';
+        ind.style.cssText = 'margin-top:6px; font-size:0.85em; color:#007bff; font-weight:bold;';
+        document.getElementById('receipt-file').after(ind);
+      }
+      ind.textContent = `選択中: ${text}`;
+    }
+
+    // PDF.jsを使ったモーダルと切り抜き処理
+    async function openPdfCropModal(pdfFile) {
+      const modal = document.getElementById('pdf-modal');
+      modal.style.display = 'block';
+
+      const arrayBuffer = await pdfFile.arrayBuffer();
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdfDoc = await loadingTask.promise;
+      const page = await pdfDoc.getPage(1);
+
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.getElementById('pdf-canvas');
+      const context = canvas.getContext('2d');
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+
+      await page.render({ canvasContext: context, viewport: viewport }).promise;
+
+      initCropper(canvas);
+    }
+
+    let isDrawing = false;
+    let startX = 0, startY = 0, endX = 0, endY = 0;
+
+    function initCropper(canvas) {
+      const container = document.getElementById('pdf-canvas-container');
+      const cropBox = document.getElementById('crop-box');
+
+      const getPos = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+          x: Math.max(0, Math.min(clientX - rect.left, rect.width)),
+          y: Math.max(0, Math.min(clientY - rect.top, rect.height))
+        };
+      };
+
+      const start = (e) => {
+        isDrawing = true;
+        const pos = getPos(e);
+        startX = pos.x; startY = pos.y;
+        cropBox.style.display = 'block';
+        cropBox.style.left = startX + 'px';
+        cropBox.style.top = startY + 'px';
+        cropBox.style.width = '0px';
+        cropBox.style.height = '0px';
+        e.preventDefault();
+      };
+
+      const move = (e) => {
+        if (!isDrawing) return;
+        const pos = getPos(e);
+        endX = pos.x; endY = pos.y;
+
+        const currentX = Math.min(startX, endX);
+        const currentY = Math.min(startY, endY);
+        const currentW = Math.abs(endX - startX);
+        const currentH = Math.abs(endY - startY);
+
+        cropBox.style.left = currentX + 'px';
+        cropBox.style.top = currentY + 'px';
+        cropBox.style.width = currentW + 'px';
+        cropBox.style.height = currentH + 'px';
+        e.preventDefault();
+      };
+
+      const end = () => {
+        isDrawing = false;
+      };
+
+      container.onmousedown = start;
+      container.onmousemove = move;
+      window.onmouseup = end;
+
+      container.ontouchstart = start;
+      container.ontouchmove = move;
+      window.ontouchend = end;
+    }
+
+    window.confirmPdfCrop = function() {
+      const canvas = document.getElementById('pdf-canvas');
+      const cropBox = document.getElementById('crop-box');
+
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+
+      const left = parseFloat(cropBox.style.left) * scaleX;
+      const top = parseFloat(cropBox.style.top) * scaleY;
+      const width = parseFloat(cropBox.style.width) * scaleX;
+      const height = parseFloat(cropBox.style.height) * scaleY;
+
+      if (width < 10 || height < 10) {
+        alert('範囲が小さすぎます。切り抜く領域を四角形ドラッグで選択してください。');
+        return;
+      }
+
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = width;
+      tempCanvas.height = height;
+      const tCtx = tempCanvas.getContext('2d');
+      tCtx.drawImage(canvas, left, top, width, height, 0, 0, width, height);
+
+      croppedPdfDataUrl = tempCanvas.toDataURL('image/jpeg', 0.8);
+      selectedImageBlob = null;
+
+      showSelectedIndicator('PDF切り抜き画像');
+      document.getElementById('pdf-modal').style.display = 'none';
+    };
+
+    window.cancelPdfCrop = function() {
+      document.getElementById('pdf-modal').style.display = 'none';
+      document.getElementById('receipt-file').value = '';
+    };
+
     window.addEntry = async function() {
       const payerEl = document.getElementById('payer');
       const amountEl = document.getElementById('amount');
       const placeEl = document.getElementById('purchase-place');
       const contentEl = document.getElementById('purchase-content');
       const dateEl = document.getElementById('date');
-      const fileEl = document.getElementById('receipt-file');
       const entryEventEl = document.getElementById('entry-event');
       const autoSwitchEl = document.getElementById('auto-switch-tab');
 
@@ -565,7 +729,6 @@
       const purchasePlace = (placeEl && placeEl.value.trim()) || '場所未入力';
       const purchaseContent = (contentEl && contentEl.value.trim()) || '';
       const date = (dateEl && dateEl.value) || new Date().toISOString().split('T')[0];
-      const receiptFile = fileEl && fileEl.files ? fileEl.files[0] : null;
       let eventId = (entryEventEl && entryEventEl.value) || 'default';
       const autoSwitch = autoSwitchEl ? autoSwitchEl.checked : true;
 
@@ -589,13 +752,23 @@
         if (amountEl) amountEl.value = '';
         if (placeEl) placeEl.value = '';
         if (contentEl) contentEl.value = '';
+        const fileEl = document.getElementById('receipt-file');
         if (fileEl) fileEl.value = '';
+        const ind = document.getElementById('selected-file-indicator');
+        if (ind) ind.remove();
+
+        const activeImageFile = selectedImageBlob;
+        const activePdfData = croppedPdfDataUrl;
+        selectedImageBlob = null;
+        croppedPdfDataUrl = null;
 
         if (autoSwitch) switchTab('history');
         else alert('追加しました！');
 
-        if (receiptFile) {
-          uploadReceiptInBackground(newItemId, receiptFile, date, purchasePlace);
+        if (activePdfData) {
+          uploadCroppedImageInBackground(newItemId, activePdfData, date, purchasePlace);
+        } else if (activeImageFile) {
+          uploadReceiptInBackground(newItemId, activeImageFile, date, purchasePlace);
         }
 
       } catch (err) {
@@ -625,11 +798,30 @@
           await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
             receiptUrl: uploaded.url
           });
-        } else {
-          alert(`⚠️ レシートの紐づけに失敗しました:\n${uploaded.error || '合言葉やURLを確認してください'}`);
         }
       } catch (e) {
-        console.warn('レシート画像のバックグラウンドアップロードに失敗しました:', e);
+        console.warn('アップロードエラー:', e);
+      }
+    }
+
+    async function uploadCroppedImageInBackground(itemId, dataUrl, date, purchasePlace) {
+      try {
+        const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
+        const pin = document.getElementById('receipt-pin-input')?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
+        if (!uploadUrl || !pin) return;
+
+        const uploaded = await uploadReceiptViaFetch(uploadUrl, {
+          action: 'upload', roomId, pin, fileName: `${date}_${purchasePlace}_pdf_${Date.now()}.jpg`,
+          mimeType: 'image/jpeg', data: dataUrl.split(',')[1]
+        });
+
+        if (uploaded.ok && uploaded.url) {
+          await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
+            receiptUrl: uploaded.url
+          });
+        }
+      } catch (e) {
+        console.warn('PDF切抜きアップロードエラー:', e);
       }
     }
 
@@ -637,6 +829,11 @@
       const fileInput = document.getElementById(`late-receipt-${itemId}`);
       const file = fileInput && fileInput.files ? fileInput.files[0] : null;
       if (!file) return;
+
+      if (file.type === 'application/pdf') {
+        alert('PDFからの追加は入力画面からの新規追加をご利用ください（または画像を保存して追加してください）。');
+        return;
+      }
 
       const uploadUrl = (currentSettings.driveUploadUrl || '').trim();
       const pin = document.getElementById(`receipt-pin-input`)?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
@@ -817,9 +1014,9 @@
       <input type="text" id="purchase-content" placeholder="例：食料品、日用品、洗剤など">
 
       <div class="receipt-box">
-        <label for="receipt-file">レシート画像（任意）</label>
-        <input type="file" id="receipt-file" accept="image/*" capture="environment">
-        <div class="receipt-help">画像を選ぶと、購入データの保存後に裏でドライブへ送信します。</div>
+        <label for="receipt-file">レシート画像 / PDF（任意）</label>
+        <input type="file" id="receipt-file" accept="image/*,application/pdf">
+        <div class="receipt-help">画像またはPDFファイルを選択できます。PDFの場合は表示された範囲を指やマウスでドラッグして切り抜けます。</div>
       </div>
 
       <label class="checkbox-label">
@@ -914,7 +1111,7 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（描画エラー防止修正版）
+        ⚙️ システム情報（PDFトリミング対応版）
       </div>
     </div>
 
@@ -924,6 +1121,22 @@
       </div>
       <input type="text" id="share-url" readonly style="font-size:0.8em; color:#666;">
       <button onclick="copyShareUrl()" style="background:#17a2b8;">相手に送るURLをコピー</button>
+    </div>
+  </div>
+
+  <!-- PDF範囲選択モーダル -->
+  <div id="pdf-modal">
+    <div class="modal-content">
+      <h3>PDFの切り抜き</h3>
+      <p style="font-size:0.85em; color:#666;">レシート部分をマウス（または指）でドラッグして囲んでください。</p>
+      <div id="pdf-canvas-container">
+        <canvas id="pdf-canvas"></canvas>
+        <div id="crop-box"></div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button type="button" onclick="confirmPdfCrop()" style="background:#28a745; margin-top:0;">この範囲を使う</button>
+        <button type="button" onclick="cancelPdfCrop()" style="background:#6c757d; margin-top:0;">キャンセル</button>
+      </div>
     </div>
   </div>
 
