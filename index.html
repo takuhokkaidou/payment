@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（負担区分対応・JSON通信版）</title>
+  <title>ふたりの貸し借りメモ（支払・負担内訳＆絞り込み表示対応版）</title>
   <!-- PDF.js読み込み -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -38,7 +38,8 @@
 
     .filter-summary { background: #e7f5ff; border: 1px solid #a5d8ff; padding: 12px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9em; }
     .filter-summary div { display: flex; justify-content: space-between; margin-bottom: 4px; }
-    .filter-summary div:last-child { margin-bottom: 0; font-weight: bold; border-top: 1px dashed #74c0fc; padding-top: 4px; }
+    .filter-summary .summary-title { font-weight: bold; border-bottom: 1px solid #74c0fc; padding-bottom: 4px; margin-bottom: 6px; color: #0056b3; }
+    .filter-summary div:last-child { margin-top: 6px; font-weight: bold; border-top: 1px dashed #74c0fc; padding-top: 6px; }
 
     .btn-delete { width: auto; padding: 4px 8px; font-size: 0.8em; background: #dc3545; color: white; border: none; border-radius: 4px; margin-top: 0; }
     .btn-delete:hover { background: #bd2130; }
@@ -324,7 +325,11 @@
       const selectedPeriod = monthFilter.value;
       const selectedEvent = eventFilter.value;
 
-      let netA = 0; // Aさんが他人のために立て替えた純額（プラスならAさんが受け取る、マイナスならBさんが受け取る）
+      let totalPaidA = 0;
+      let totalPaidB = 0;
+      let totalBurdenA = 0;
+      let totalBurdenB = 0;
+      let netA = 0; 
       
       historyList.innerHTML = '';
       approvalBox.innerHTML = '';
@@ -335,7 +340,7 @@
       entries.forEach(([id, item]) => {
         const payer = item.payer; // 'A' or 'B'
         const amount = item.amount;
-        const splitType = item.splitType || 'half'; // 'half', 'A_only', 'B_only'
+        const splitType = item.splitType || 'half';
 
         if (item.deleteRequested) {
           const requestedByName = item.deleteRequestedBy === 'A' ? currentSettings.nameA : currentSettings.nameB;
@@ -359,20 +364,24 @@
 
         if (isMatchEvent(item, selectedEvent)) {
           if (isMatchPeriod(item.date || '', selectedPeriod)) {
+            // 有効なデータとして集計
             if (!item.deleteRequested && !item.isSettlement) {
-              // 貸し借りバランスの計算
-              // splitType: 'half' -> 支払った人の勝ち分は amount / 2
-              // splitType: 'A_only' -> Aさんのもの（Bが全額払ったらBの勝ち、Aが払ったら0）
-              // splitType: 'B_only' -> Bさんのもの（Aが全額払ったらAの勝ち、Bが払ったら0）
+              if (payer === 'A') totalPaidA += amount;
+              if (payer === 'B') totalPaidB += amount;
+
               if (splitType === 'half') {
+                totalBurdenA += amount / 2;
+                totalBurdenB += amount / 2;
                 if (payer === 'A') netA += amount / 2;
                 else netA -= amount / 2;
               } else if (splitType === 'A_only') {
-                if (payer === 'B') netA -= amount; // BがAの分を全額払った -> AはBに全額返す必要あり
-                else netA += amount; // Aが自分の分を払った（立て替えなし）
+                totalBurdenA += amount; // 全額Aの負担
+                if (payer === 'B') netA -= amount; // Bが払ったのでAはBに返す
+                else netA += amount; // Aが払った（自分負担）
               } else if (splitType === 'B_only') {
-                if (payer === 'A') netA += amount; // AがBの分を全額払った -> BはAに全額返す必要あり
-                else netA -= amount; // Bが自分の分を払った
+                totalBurdenB += amount; // 全額Bの負担
+                if (payer === 'A') netA += amount; // Aが払ったのでBはAに返す
+                else netA -= amount; // Bが払った（自分負担）
               }
             }
 
@@ -420,10 +429,25 @@
       const nameA = currentSettings.nameA;
       const nameB = currentSettings.nameB;
 
+      // 現在の絞り込み条件のテキスト表記を作成
+      let eventDisplayName = 'すべてのイベント/テーマ';
+      if (selectedEvent === 'unsettled') eventDisplayName = '未清算の項目のみ';
+      else if (selectedEvent === 'settled') eventDisplayName = '清算済の項目のみ';
+      else if (eventsList[selectedEvent]) eventDisplayName = eventsList[selectedEvent];
+
+      let periodDisplayName = 'すべての期間';
+      if (selectedPeriod !== 'all') {
+        if (selectedPeriod.length === 4) periodDisplayName = `${selectedPeriod}年`;
+        else periodDisplayName = selectedPeriod.replace('-', '年') + '月';
+      }
+
       const summaryBox = document.getElementById('filter-summary-box');
       if (summaryBox) {
         summaryBox.innerHTML = `
-          <div><span>現在の貸し借り状態:</span><span>${netA === 0 ? '±0円' : (netA > 0 ? `${nameB} → ${nameA} へ ¥${Math.abs(netA).toLocaleString()}` : `${nameA} → ${nameB} へ ¥${Math.abs(netA).toLocaleString()}`)}</span></div>
+          <div class="summary-title">🔍 表示中: ${escapeHtml(eventDisplayName)} / ${escapeHtml(periodDisplayName)}</div>
+          <div><span>${nameA}の支払合計:</span><span>¥${totalPaidA.toLocaleString()} (負担額: ¥${totalBurdenA.toLocaleString()})</span></div>
+          <div><span>${nameB}の支払合計:</span><span>¥${totalPaidB.toLocaleString()} (負担額: ¥${totalBurdenB.toLocaleString()})</span></div>
+          <div><span>現在の貸し借り:</span><span>${netA === 0 ? '±0円' : (netA > 0 ? `${nameB} → ${nameA} へ ¥${Math.abs(netA).toLocaleString()}` : `${nameA} → ${nameB} へ ¥${Math.abs(netA).toLocaleString()}`)}</span></div>
         `;
       }
 
@@ -941,7 +965,7 @@
     };
 
     window.requestDelete = function(itemId) {
-      if (confirm('相手に削除申請を送りますか？（相手が許可すると完全に削除されます）')) {
+      if (confirm('相手に削除申請を送りますか？クッションを挟んで相手が許可すると削除されます。')) {
         update(ref(db, `rooms/${roomId}/items/${itemId}`), {
           deleteRequested: true,
           deleteRequestedBy: currentUserRole
@@ -1135,7 +1159,7 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（負担区分対応版）
+        ⚙️ システム情報（支払・負担内訳＆絞り込み表示対応版）
       </div>
     </div>
 
