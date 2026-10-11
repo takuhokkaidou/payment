@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（サマリー上部移動対応版）</title>
+  <title>ふたりの貸し借りメモ（入力補助15個＆払った人フィルター対応版）</title>
   <!-- PDF.js読み込み -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -27,7 +27,7 @@
     .flex-inputs { display: flex; gap: 8px; }
     .flex-inputs > div { flex: 1; }
     
-    .quick-notes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .quick-notes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-height: 120px; overflow-y: auto; }
     .note-btn { width: auto; padding: 6px 12px; font-size: 0.85em; background: #e9ecef; color: #495057; border: 1px solid #ced4da; margin-top: 0; border-radius: 16px; }
     
     .tab-menu { display: flex; border-bottom: 2px solid #ccc; margin-bottom: 16px; background: #fff; border-radius: 8px 8px 0 0; overflow: hidden; }
@@ -174,6 +174,12 @@
         splitTypeSelect.options[2].text = `${currentSettings.nameB}の全額負担`;
       }
 
+      const payerFilterSelect = document.getElementById('payer-filter');
+      if (payerFilterSelect && payerFilterSelect.options.length >= 3) {
+        payerFilterSelect.options[1].text = currentSettings.nameA;
+        payerFilterSelect.options[2].text = currentSettings.nameB;
+      }
+
       const roleSelect = document.getElementById('my-role');
       if (roleSelect && roleSelect.options.length >= 2) {
         roleSelect.options[0].text = currentSettings.nameA;
@@ -274,6 +280,7 @@
         }
       });
 
+      // 入力補助を上位15個に拡張
       const sortedNotes = Object.keys(noteCounts)
         .sort((a, b) => noteCounts[b] - noteCounts[a])
         .slice(0, 15);
@@ -310,6 +317,11 @@
       return itemEvent === selectedEvent;
     }
 
+    function isMatchPayer(item, selectedPayer) {
+      if (selectedPayer === 'all') return true;
+      return item.payer === selectedPayer;
+    }
+
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     }
@@ -317,13 +329,15 @@
     function renderApp() {
       const monthFilter = document.getElementById('month-filter');
       const eventFilter = document.getElementById('event-filter');
+      const payerFilter = document.getElementById('payer-filter');
       const historyList = document.getElementById('history');
       const approvalBox = document.getElementById('approval-requests-box');
       
-      if (!monthFilter || !eventFilter || !historyList || !approvalBox) return;
+      if (!monthFilter || !eventFilter || !payerFilter || !historyList || !approvalBox) return;
 
       const selectedPeriod = monthFilter.value;
       const selectedEvent = eventFilter.value;
+      const selectedPayer = payerFilter.value;
 
       let totalPaidA = 0;
       let totalPaidB = 0;
@@ -337,8 +351,36 @@
 
       const entries = Object.entries(rawDataCache).reverse();
 
+      // 全体の貸し借り計算は常に全てのデータから算出（フィルターに関わらず正しい清算額を維持するため）
       entries.forEach(([id, item]) => {
-        const payer = item.payer; // 'A' or 'B'
+        const payer = item.payer;
+        const amount = item.amount;
+        const splitType = item.splitType || 'half';
+
+        if (!item.deleteRequested && !item.isSettlement) {
+          if (payer === 'A') totalPaidA += amount;
+          if (payer === 'B') totalPaidB += amount;
+
+          if (splitType === 'half') {
+            totalBurdenA += amount / 2;
+            totalBurdenB += amount / 2;
+            if (payer === 'A') netA += amount / 2;
+            else netA -= amount / 2;
+          } else if (splitType === 'A_only') {
+            totalBurdenA += amount; 
+            if (payer === 'B') netA -= amount; 
+            else netA += amount; 
+          } else if (splitType === 'B_only') {
+            totalBurdenB += amount; 
+            if (payer === 'A') netA += amount; 
+            else netA -= amount; 
+          }
+        }
+      });
+
+      // 履歴表示用のループ
+      entries.forEach(([id, item]) => {
+        const payer = item.payer;
         const amount = item.amount;
         const splitType = item.splitType || 'half';
 
@@ -362,61 +404,40 @@
           }
         }
 
-        if (isMatchEvent(item, selectedEvent)) {
-          if (isMatchPeriod(item.date || '', selectedPeriod)) {
-            if (!item.deleteRequested && !item.isSettlement) {
-              if (payer === 'A') totalPaidA += amount;
-              if (payer === 'B') totalPaidB += amount;
+        // イベント・期間・払った人フィルターの適用
+        if (isMatchEvent(item, selectedEvent) && isMatchPeriod(item.date || '', selectedPeriod) && isMatchPayer(item, selectedPayer)) {
+          const isMyRequest = item.deleteRequestedBy === currentUserRole;
+          const eventName = eventsList[item.eventId] || '日常の貸し借り';
+          const payerName = payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
+          
+          let splitLabel = '折半';
+          if (splitType === 'A_only') splitLabel = `${currentSettings.nameA}の分`;
+          if (splitType === 'B_only') splitLabel = `${currentSettings.nameB}の分`;
 
-              if (splitType === 'half') {
-                totalBurdenA += amount / 2;
-                totalBurdenB += amount / 2;
-                if (payer === 'A') netA += amount / 2;
-                else netA -= amount / 2;
-              } else if (splitType === 'A_only') {
-                totalBurdenA += amount; 
-                if (payer === 'B') netA -= amount; 
-                else netA += amount; 
-              } else if (splitType === 'B_only') {
-                totalBurdenB += amount; 
-                if (payer === 'A') netA += amount; 
-                else netA -= amount; 
+          const li = document.createElement('li');
+          li.innerHTML = `
+            <div class="item-header">
+              <span>📅 ${item.date || '日付未設定'} [${escapeHtml(eventName)}] ${item.isSettlement ? '<span class="settled-badge">🧹 清算済</span>' : ''}</span>
+              <span>負担: <strong>${splitLabel}</strong></span>
+            </div>
+            <div class="item-body">
+              <span>${payerName}が ¥${amount.toLocaleString()} 支払い (${escapeHtml(item.purchasePlace || item.note || '場所未入力')})</span>
+              ${item.deleteRequested 
+                ? (isMyRequest 
+                    ? `<div style="display:flex; align-items:center; gap:6px;"><span class="pending-badge">相手の承認待ち ⏳</span><button class="btn-delete" style="background:#6c757d;" onclick="rejectDelete('${id}')">取消</button></div>` 
+                    : `<span class="pending-badge">削除許可待ち</span>`)
+                : `<button class="btn-delete" onclick="requestDelete('${id}')">削除 🗑️</button>`
               }
-            }
-
-            const isMyRequest = item.deleteRequestedBy === currentUserRole;
-            const eventName = eventsList[item.eventId] || '日常の貸し借り';
-            const payerName = payer === 'A' ? currentSettings.nameA : currentSettings.nameB;
-            
-            let splitLabel = '折半';
-            if (splitType === 'A_only') splitLabel = `${currentSettings.nameA}の分`;
-            if (splitType === 'B_only') splitLabel = `${currentSettings.nameB}の分`;
-
-            const li = document.createElement('li');
-            li.innerHTML = `
-              <div class="item-header">
-                <span>📅 ${item.date || '日付未設定'} [${escapeHtml(eventName)}] ${item.isSettlement ? '<span class="settled-badge">🧹 清算済</span>' : ''}</span>
-                <span>負担: <strong>${splitLabel}</strong></span>
-              </div>
-              <div class="item-body">
-                <span>${payerName}が ¥${amount.toLocaleString()} 支払い (${escapeHtml(item.purchasePlace || item.note || '場所未入力')})</span>
-                ${item.deleteRequested 
-                  ? (isMyRequest 
-                      ? `<div style="display:flex; align-items:center; gap:6px;"><span class="pending-badge">相手の承認待ち ⏳</span><button class="btn-delete" style="background:#6c757d;" onclick="rejectDelete('${id}')">取消</button></div>` 
-                      : `<span class="pending-badge">削除許可待ち</span>`)
-                  : `<button class="btn-delete" onclick="requestDelete('${id}')">削除 🗑️</button>`
-                }
-              </div>
-              ${item.purchaseContent ? `<div style="font-size:0.9em;color:#555;">購入内容：${escapeHtml(item.purchaseContent)}</div>` : ''}
-              <div style="margin-top: 4px;">
-                ${item.receiptUrl 
-                  ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` 
-                  : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*,application/pdf" style="display:none;" onchange="uploadLateReceipt('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
-                }
-              </div>
-            `;
-            historyList.appendChild(li);
-          }
+            </div>
+            ${item.purchaseContent ? `<div style="font-size:0.9em;color:#555;">購入内容：${escapeHtml(item.purchaseContent)}</div>` : ''}
+            <div style="margin-top: 4px;">
+              ${item.receiptUrl 
+                ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` 
+                : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*,application/pdf" style="display:none;" onchange="uploadLateReceipt('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
+              }
+            </div>
+          `;
+          historyList.appendChild(li);
         }
       });
 
@@ -439,9 +460,12 @@
         else periodDisplayName = selectedPeriod.replace('-', '年') + '月';
       }
 
-      // サマリー部分（トップ＆履歴内共通で表示内容を更新）
+      let payerDisplayName = '全員の支払い';
+      if (selectedPayer === 'A') payerDisplayName = `${nameA}の支払いのみ`;
+      if (selectedPayer === 'B') payerDisplayName = `${nameB}の支払いのみ`;
+
       const summaryHtml = `
-        <div class="summary-title">🔍 表示中: ${escapeHtml(eventDisplayName)} / ${escapeHtml(periodDisplayName)}</div>
+        <div class="summary-title">🔍 表示中: ${escapeHtml(eventDisplayName)} / ${escapeHtml(periodDisplayName)} / ${escapeHtml(payerDisplayName)}</div>
         <div><span>${nameA}の支払合計:</span><span>¥${totalPaidA.toLocaleString()} (負担額: ¥${totalBurdenA.toLocaleString()})</span></div>
         <div><span>${nameB}の支払合計:</span><span>¥${totalPaidB.toLocaleString()} (負担額: ¥${totalBurdenB.toLocaleString()})</span></div>
         <div><span>現在の貸し借り:</span><span>${netA === 0 ? '±0円' : (netA > 0 ? `${nameB} → ${nameA} へ ¥${Math.abs(netA).toLocaleString()}` : `${nameA} → ${nameB} へ ¥${Math.abs(netA).toLocaleString()}`)}</span></div>
@@ -987,12 +1011,7 @@
     };
 
     window.onFilterChange = function() {
-      const eventFilter = document.getElementById('event-filter');
-      if (eventFilter) {
-        currentSettings.currentEvent = eventFilter.value;
-        set(ref(db, `rooms/${roomId}/settings`), currentSettings);
-        renderApp();
-      }
+      renderApp();
     };
 
     window.copyShareUrl = function() {
@@ -1017,7 +1036,7 @@
     </select>
   </div>
 
-  <!-- トップのカード：青い枠のサマリーを清算ボタンの上に移動 -->
+  <!-- トップのカード：サマリーと清算ボタン -->
   <div class="card">
     <div class="filter-summary" id="top-filter-summary-box" style="margin-bottom: 12px;"></div>
     <div id="settlement" class="result">読み込み中...</div>
@@ -1100,13 +1119,22 @@
       </div>
 
       <div class="filter-group">
+        <label for="payer-filter">払った人で絞り込み</label>
+        <select id="payer-filter" onchange="onFilterChange()">
+          <option value="all">全員の支払い（フィルターなし）</option>
+          <option value="A">Aさん</option>
+          <option value="B">Bさん</option>
+        </select>
+      </div>
+
+      <div class="filter-group">
         <label for="month-filter">表示する期間（年・月）</label>
         <select id="month-filter" onchange="onFilterChange()">
           <option value="all">すべての期間</option>
         </select>
       </div>
 
-      <!-- 履歴タブ内にも残す（あるいは連動して更新） -->
+      <!-- 履歴タブ内サマリー -->
       <div class="filter-summary" id="filter-summary-box"></div>
 
       <ul id="history"></ul>
@@ -1164,7 +1192,7 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（サマリー上部配置版）
+        ⚙️ システム情報（補助15個＆払った人フィルター対応版）
       </div>
     </div>
 
