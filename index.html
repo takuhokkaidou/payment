@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ふたりの貸し借りメモ（履歴PDF切り抜き対応版）</title>
+  <title>ふたりの貸し借りメモ（写真＆PDF切り抜き対応版）</title>
   <!-- PDF.js読み込み -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -129,8 +129,7 @@
     let currentUserRole = localStorage.getItem(`room_${roomId}_role`) || 'A';
     let currentSettlementData = null;
 
-    let selectedImageBlob = null;
-    let croppedPdfDataUrl = null;
+    let croppedImageDataUrl = null; // 切り抜き後の画像データ
     let activeLateReceiptItemId = null; // 履歴から追加する際の対象アイテムID
 
     onValue(ref(db, `rooms/${roomId}/settings`), (snapshot) => {
@@ -438,7 +437,7 @@
             <div style="margin-top: 4px;">
               ${item.receiptUrl 
                 ? `<a class="receipt-link" href="${escapeHtml(item.receiptUrl)}" target="_blank" rel="noopener noreferrer">🧾 レシートを見る</a>` 
-                : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*,application/pdf" style="display:none;" onchange="handleLateReceiptChange('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
+                : `<label style="display:inline-block; font-size:0.8em; color:#e67e22; margin:0;">レシートなし</label> <input type="file" id="late-receipt-${id}" accept="image/*,application/pdf" style="display:none;" onchange="handleFileSelect('${id}')"> <button type="button" class="receipt-upload-btn" onclick="document.getElementById('late-receipt-${id}').click()">➕ レシートを追加</button>`
               }
             </div>
           `;
@@ -648,13 +647,11 @@
         const file = e.target.files[0];
         if (!file) return;
 
+        activeLateReceiptItemId = null; // 入力画面用
         if (file.type === 'application/pdf') {
-          activeLateReceiptItemId = null; // 入力画面用
           await openPdfCropModal(file);
         } else {
-          selectedImageBlob = file;
-          croppedPdfDataUrl = null;
-          showSelectedIndicator(file.name);
+          await openImageCropModal(file);
         }
       });
     }
@@ -670,6 +667,7 @@
       ind.textContent = `選択中: ${text}`;
     }
 
+    // PDFまたは通常の画像をキャンバスに読み込んで切り抜きモーダルを開く
     async function openPdfCropModal(pdfFile) {
       const modal = document.getElementById('pdf-modal');
       modal.style.display = 'block';
@@ -690,12 +688,38 @@
       initCropper(canvas);
     }
 
+    async function openImageCropModal(imageFile) {
+      const modal = document.getElementById('pdf-modal');
+      modal.style.display = 'block';
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.getElementById('pdf-canvas');
+          const context = canvas.getContext('2d');
+          
+          // 最大幅制限を持たせて高画質すぎないように描画
+          const maxSide = 1200;
+          const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+
+          context.drawImage(img, 0, 0, canvas.width, canvas.height);
+          initCropper(canvas);
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(imageFile);
+    }
+
     let isDrawing = false;
     let startX = 0, startY = 0, endX = 0, endY = 0;
 
     function initCropper(canvas) {
       const container = document.getElementById('pdf-canvas-container');
       const cropBox = document.getElementById('crop-box');
+      cropBox.style.display = 'none';
 
       const getPos = (e) => {
         const rect = canvas.getBoundingClientRect();
@@ -762,30 +786,28 @@
       const width = parseFloat(cropBox.style.width) * scaleX;
       const height = parseFloat(cropBox.style.height) * scaleY;
 
-      if (width < 10 || height < 10) {
-        alert('範囲が小さすぎます。切り抜く領域を四角形ドラッグで選択してください。');
-        return;
+      // 範囲が指定されなかった場合はキャンバス全体を切り抜き対象とする
+      let finalCanvas = canvas;
+      if (width >= 10 && height >= 10) {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = width;
+        tempCanvas.height = height;
+        const tCtx = tempCanvas.getContext('2d');
+        tCtx.drawImage(canvas, left, top, width, height, 0, 0, width, height);
+        finalCanvas = tempCanvas;
       }
 
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = width;
-      tempCanvas.height = height;
-      const tCtx = tempCanvas.getContext('2d');
-      tCtx.drawImage(canvas, left, top, width, height, 0, 0, width, height);
-
-      const croppedDataUrl = tempCanvas.toDataURL('image/jpeg', 0.8);
+      croppedImageDataUrl = finalCanvas.toDataURL('image/jpeg', 0.6); // 圧縮率0.6で軽量化
 
       document.getElementById('pdf-modal').style.display = 'none';
 
       if (activeLateReceiptItemId) {
-        // 履歴アイテムに対するPDF切り抜きアップロード
-        uploadCroppedImageInBackground(activeLateReceiptItemId, croppedDataUrl, 'late_pdf');
+        // 履歴アイテムに対する切り抜きアップロード
+        uploadCroppedImageInBackground(activeLateReceiptItemId, croppedImageDataUrl);
         activeLateReceiptItemId = null;
       } else {
         // 入力画面用
-        croppedPdfDataUrl = croppedDataUrl;
-        selectedImageBlob = null;
-        showSelectedIndicator('PDF切り抜き画像');
+        showSelectedIndicator('切り抜き済み画像（軽量化完了）');
       }
     };
 
@@ -841,18 +863,14 @@
         const ind = document.getElementById('selected-file-indicator');
         if (ind) ind.remove();
 
-        const activeImageFile = selectedImageBlob;
-        const activePdfData = croppedPdfDataUrl;
-        selectedImageBlob = null;
-        croppedPdfDataUrl = null;
+        const activeImgData = croppedImageDataUrl;
+        croppedImageDataUrl = null;
 
         if (autoSwitch) switchTab('history');
         else alert('追加しました！');
 
-        if (activePdfData) {
-          uploadCroppedImageInBackground(newItemId, activePdfData, 'pdf');
-        } else if (activeImageFile) {
-          uploadReceiptImageFileInBackground(newItemId, activeImageFile);
+        if (activeImgData) {
+          uploadCroppedImageInBackground(newItemId, activeImgData);
         }
 
       } catch (err) {
@@ -866,29 +884,7 @@
       }
     };
 
-    async function uploadReceiptImageFileInBackground(itemId, imageFile) {
-      try {
-        const uploadUrl = (currentSettings.driveUploadUrl || DEFAULT_GAS_URL).trim();
-        const pin = document.getElementById('receipt-pin-input')?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-        if (!uploadUrl || !pin) return;
-
-        const compressed = await compressReceiptImage(imageFile);
-        const uploaded = await uploadReceiptViaFetch(uploadUrl, {
-          action: 'upload', roomId, pin, fileName: `receipt_${Date.now()}.jpg`,
-          mimeType: 'image/jpeg', data: compressed.split(',')[1]
-        });
-
-        if (uploaded.ok && uploaded.url) {
-          await update(ref(db, `rooms/${roomId}/items/${itemId}`), {
-            receiptUrl: uploaded.url
-          });
-        }
-      } catch (e) {
-        console.warn('アップロードエラー:', e);
-      }
-    }
-
-    async function uploadCroppedImageInBackground(itemId, dataUrl, prefix) {
+    async function uploadCroppedImageInBackground(itemId, dataUrl) {
       try {
         const uploadUrl = (currentSettings.driveUploadUrl || DEFAULT_GAS_URL).trim();
         const pin = document.getElementById('receipt-pin-input')?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
@@ -897,7 +893,7 @@
 
         alert('レシートのアップロードを開始します。');
         const uploaded = await uploadReceiptViaFetch(uploadUrl, {
-          action: 'upload', roomId, pin, fileName: `${prefix}_${Date.now()}.jpg`,
+          action: 'upload', roomId, pin, fileName: `receipt_${Date.now()}.jpg`,
           mimeType: 'image/jpeg', data: dataUrl.split(',')[1]
         });
 
@@ -912,50 +908,18 @@
       }
     }
 
-    window.handleLateReceiptChange = async function(itemId) {
-      const fileInput = document.getElementById(`late-receipt-${itemId}`);
-      const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+    window.handleFileSelectForHistory = async function(itemId, inputEl) {
+      const file = inputEl.files ? inputEl.files[0] : null;
       if (!file) return;
 
-      const uploadUrl = (currentSettings.driveUploadUrl || DEFAULT_GAS_URL).trim();
-      const pin = document.getElementById('receipt-pin-input')?.value.trim() || localStorage.getItem(`room_${roomId}_receipt_pin`) || '';
-      
-      if (!uploadUrl) return alert('設定タブでGoogle Apps ScriptのウェブアプリURLを設定してください。');
-      if (!pin) return alert('設定タブでレシート保存用の合言葉を入力してください。');
-
+      activeLateReceiptItemId = itemId;
       if (file.type === 'application/pdf') {
-        activeLateReceiptItemId = itemId;
         await openPdfCropModal(file);
       } else {
-        await uploadReceiptImageFileInBackground(itemId, file);
-        alert('レシートを追加しました！');
+        await openImageCropModal(file);
       }
-      fileInput.value = '';
+      inputEl.value = '';
     };
-
-    function compressReceiptImage(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error('画像を読み込めませんでした。'));
-        reader.onload = () => {
-          const img = new Image();
-          img.onerror = () => reject(new Error('画像を開けませんでした。'));
-          img.onload = () => {
-            const maxSide = 1000;
-            const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-            const canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(img.width * scale));
-            canvas.height = Math.max(1, Math.round(img.height * scale));
-            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-            let result = canvas.toDataURL('image/jpeg', 0.5);
-            if (result.length > 500_000) result = canvas.toDataURL('image/jpeg', 0.4);
-            resolve(result);
-          };
-          img.src = reader.result;
-        };
-        reader.readAsDataURL(file);
-      });
-    }
 
     async function uploadReceiptViaFetch(url, payload) {
       const response = await fetch(url, {
@@ -1094,7 +1058,7 @@
       <div class="receipt-box">
         <label for="receipt-file">レシート画像 / PDF（任意）</label>
         <input type="file" id="receipt-file" accept="image/*,application/pdf">
-        <div class="receipt-help">画像またはPDFファイルを選択できます。PDFの場合は表示された範囲を指やマウスでドラッグして切り抜けます。</div>
+        <div class="receipt-help">写真またはPDFファイルを選択できます。選択後に表示される範囲をドラッグして切り抜くと、自動で軽量化されて保存されます。</div>
       </div>
 
       <label class="checkbox-label">
@@ -1199,23 +1163,23 @@
       <button onclick="saveNames()" style="background:#28a745;">設定を保存</button>
 
       <div class="version-info">
-        ⚙️ システム情報（履歴PDF切り抜き対応版）
+        ⚙️ システム情報（写真＆PDF切り抜き軽量化対応版）
       </div>
     </div>
 
     <div class="card">
       <div class="room-info">
-        部屋コード: <strong id="room-id">--</strong>
+        部屋コード: <strong id="room-id">----</strong>
       </div>
       <input type="text" id="share-url" readonly style="font-size:0.8em; color:#666;">
       <button onclick="copyShareUrl()" style="background:#17a2b8;">相手に送るURLをコピー</button>
     </div>
   </div>
 
-  <!-- PDF範囲選択モーダル -->
+  <!-- 範囲選択（切り抜き）モーダル -->
   <div id="pdf-modal">
     <div class="modal-content">
-      <h3>PDFの切り抜き</h3>
+      <h3>レシートの切り抜き</h3>
       <p style="font-size:0.85em; color:#666;">レシート部分をマウス（または指）でドラッグして囲んでください。</p>
       <div id="pdf-canvas-container">
         <canvas id="pdf-canvas"></canvas>
@@ -1228,5 +1192,24 @@
     </div>
   </div>
 
+  <!-- 履歴用の隠しファイルinput動的生成補完用 -->
+  <div style="display:none;" id="hidden-inputs-container"></div>
+  
+  <script>
+    // 履歴アイテムごとのファイル選択を捕捉するためのハンドラ
+    window.handleLateReceiptChange = function(itemId) {
+      let fileInput = document.getElementById(`late-receipt-${itemId}`);
+      if (!fileInput) {
+        fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.id = `late-receipt-${itemId}`;
+        fileInput.accept = 'image/*,application/pdf';
+        fileInput.style.display = 'none';
+        fileInput.onchange = (e) => handleFileSelectForHistory(itemId, fileInput);
+        document.body.appendChild(fileInput);
+      }
+      fileInput.click();
+    };
+  </script>
 </body>
 </html>
